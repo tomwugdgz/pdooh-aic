@@ -1,0 +1,20 @@
+[Unit]
+Description=pDOOH 公网隧道鉴权代理 (Basic Auth)
+Documentation=file:///home/tom/deepseek/pdooh-aic/README.md
+After=network.target pdooh-aic.service
+Wants=pdooh-aic.service
+
+[Service]
+Type=simple
+User=tom
+Group=tom
+WorkingDirectory=/home/tom/deepseek/pdooh-aic
+EnvironmentFile=/home/tom/deepseek/pdooh-aic/data/tunnel.env
+ExecStart=/home/tom/.local/bin/node /home/tom/deepseek/pdooh-aic/tunnel-proxy.js
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/tom/deepseek/pdooh-aic/data/proxy.log
+StandardError=append:/home/tom/deepseek/pdooh-aic/data/proxy.log
+
+[Install]
+WantedBy=multi-user.target

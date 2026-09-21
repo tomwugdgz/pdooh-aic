@@ -1,0 +1,29 @@
+[Unit]
+Description=pDOOH Cloudflare 隧道 (免账号 quick tunnel)
+Documentation=file:///home/tom/deepseek/pdooh-aic/README.md
+After=network.target pdooh-proxy.service
+Wants=pdooh-proxy.service
+
+[Service]
+Type=simple
+User=tom
+Group=tom
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:5004
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/tom/deepseek/pdooh-aic/data/tunnel.log
+StandardError=append:/home/tom/deepseek/pdooh-aic/data/tunnel.log
+
+[Install]
+WantedBy=multi-user.target
+
+# ------------------------------------------------------------
+# 说明：
+#   quick tunnel（免账号）每次重启会分配新的随机公网域名，
+#   当前地址查看： ./scripts/tunnel.sh url
+#   若需固定域名：需 Cloudflare 账号 + 自有域名，改用 named tunnel：
+#     cloudflared tunnel login
+#     cloudflared tunnel create pdooh-aic
+#     cloudflared tunnel route dns pdooh-aic aic.example.com
+#     cloudflared tunnel run --url http://127.0.0.1:5004 pdooh-aic
+# ------------------------------------------------------------

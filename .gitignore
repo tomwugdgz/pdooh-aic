@@ -1,0 +1,44 @@
+# ============================================================
+# 运行时数据目录 —— 绝不允许入库
+# 内含：SQLite 数据库、业务数据、运行日志、公网访问凭证
+# ============================================================
+data/*
+!data/.gitkeep
+
+# 环境变量与凭证
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+
+# 数据库文件（任何位置）
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 日志与进程文件
+*.log
+*.pid
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tgz
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+
+# 本机部署笔记（含真实内网信息）
+*.local.md
+DEPLOY-NOTES.local.md

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>免费获取户外广告投放方案 · pDOOH 社区智能屏</title>
+<meta name="description" content="覆盖粤港澳大湾区 2368 个社区点位，智能屏 / 门禁 / 道闸 / 电梯框架全场景投放。留下联系方式，1 个工作日内获得专属投放方案。">
+<style>
+    :root{
+        --primary:#6366f1; --primary-dark:#4f46e5; --secondary:#8b5cf6; --accent:#06b6d4;
+        --success:#10b981; --warning:#f59e0b; --danger:#ef4444;
+        --dark-bg:#0f172a; --dark-card:#1e293b; --dark-border:#334155;
+        --text-primary:#f1f5f9; --text-secondary:#94a3b8;
+        --gradient-primary:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);
+        --gradient-hero:linear-gradient(135deg,#0f172a 0%,#1e1b4b 45%,#164e63 100%);
+        --radius:14px;
+    }
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+        background:var(--dark-bg);color:var(--text-primary);line-height:1.6;-webkit-font-smoothing:antialiased;
+    }
+    a{color:inherit;text-decoration:none}
+
+    /* 顶部品牌栏 */
+    .nav{position:sticky;top:0;z-index:10;backdrop-filter:blur(12px);background:rgba(15,23,42,.82);
+         border-bottom:1px solid var(--dark-border);padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
+    .brand-logo{width:32px;height:32px;border-radius:9px;background:var(--gradient-primary);display:grid;place-items:center}
+    .nav-phone{font-size:13px;color:var(--text-secondary)}
+    .nav-phone b{color:var(--accent)}
+
+    /* 首屏 */
+    .hero{background:var(--gradient-hero);padding:56px 20px 64px;position:relative;overflow:hidden}
+    .hero::after{content:'';position:absolute;width:520px;height:520px;right:-160px;top:-200px;border-radius:50%;
+                 background:radial-gradient(circle,rgba(99,102,241,.32),transparent 65%)}
+    .wrap{max-width:1120px;margin:0 auto;position:relative;z-index:1}
+    .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:start}
+    .tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#a5b4fc;background:rgba(99,102,241,.14);
+         border:1px solid rgba(99,102,241,.34);padding:5px 12px;border-radius:999px;margin-bottom:18px}
+    h1{font-size:38px;line-height:1.28;font-weight:800;letter-spacing:-.5px;margin-bottom:16px}
+    h1 em{font-style:normal;background:linear-gradient(135deg,#818cf8,#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent}
+    .hero p.lead{color:#cbd5e1;font-size:15px;margin-bottom:26px;max-width:560px}
+    .stats{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:30px}
+    .stat b{display:block;font-size:26px;font-weight:800;background:linear-gradient(135deg,#818cf8,#22d3ee);
+            -webkit-background-clip:text;background-clip:text;color:transparent}
+    .stat span{font-size:12px;color:var(--text-secondary)}
+    .points{display:flex;gap:10px;flex-wrap:wrap}
+    .point{font-size:13px;color:#e2e8f0;background:rgba(30,41,59,.7);border:1px solid var(--dark-border);
+           padding:7px 13px;border-radius:9px;display:flex;align-items:center;gap:7px}
+
+    /* 表单卡片 */
+    .form-card{background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);
+               padding:26px;box-shadow:0 24px 50px -12px rgba(0,0,0,.6)}
+    .form-card h2{font-size:19px;margin-bottom:5px}
+    .form-card .sub{font-size:12.5px;color:var(--text-secondary);margin-bottom:20px}
+    .field{margin-bottom:14px}
+    .field label{display:block;font-size:12.5px;color:#cbd5e1;margin-bottom:6px}
+    .field label i{color:var(--danger);font-style:normal}
+    .field input,.field select,.field textarea{
+        width:100%;padding:11px 13px;background:#0b1220;color:var(--text-primary);
+        border:1px solid var(--dark-border);border-radius:9px;font-size:14px;font-family:inherit;outline:none;transition:.16s}
+    .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(99,102,241,.18)}
+    .row{display:flex;gap:12px}
+    .row .field{flex:1}
+    .btn{width:100%;padding:13px;border:none;border-radius:9px;background:var(--gradient-primary);color:#fff;
+         font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:.16s}
+    .btn:hover{filter:brightness(1.08)}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .privacy{font-size:11.5px;color:var(--text-secondary);text-align:center;margin-top:12px;line-height:1.7}
+    .msg{margin-top:14px;padding:12px 14px;border-radius:9px;font-size:13.5px;display:none}
+    .msg.ok{display:block;background:rgba(16,185,129,.13);border:1px solid rgba(16,185,129,.4);color:#6ee7b7}
+    .msg.err{display:block;background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.4);color:#fca5a5}
+    .msg.warn{display:block;background:rgba(245,158,11,.13);border:1px solid rgba(245,158,11,.45);color:#fcd34d}
+    .msg code{background:rgba(0,0,0,.35);padding:2px 6px;border-radius:5px;font-size:12.5px;word-break:break-all}
+    #env-banner{display:none;margin:0 0 14px;padding:10px 13px;border-radius:9px;font-size:12.5px;line-height:1.7}
+    #env-banner.show{display:block}
+    #env-banner.err{background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.42);color:#fca5a5}
+    #env-banner.ok{background:rgba(16,185,129,.13);border:1px solid rgba(16,185,129,.42);color:#6ee7b7}
+
+    /* 内容区 */
+    section{padding:52px 20px}
+    h3.sec{font-size:23px;font-weight:800;text-align:center;margin-bottom:10px}
+    p.sec-sub{text-align:center;color:var(--text-secondary);font-size:13.5px;margin-bottom:32px}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+    .card{background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);padding:22px}
+    .card .ico{font-size:24px;margin-bottom:10px}
+    .card h4{font-size:16px;margin-bottom:7px}
+    .card p{font-size:13px;color:var(--text-secondary)}
+    .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;text-align:center}
+    .flow .step{background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);padding:20px 14px;position:relative}
+    .flow .n{width:32px;height:32px;border-radius:50%;background:var(--gradient-primary);display:grid;place-items:center;
+             font-weight:800;margin:0 auto 10px;font-size:14px}
+    .flow h5{font-size:14.5px;margin-bottom:5px}
+    .flow p{font-size:12px;color:var(--text-secondary)}
+    .cta{text-align:center;background:var(--gradient-hero);border-radius:var(--radius);padding:40px 24px;border:1px solid var(--dark-border)}
+    .cta h3{font-size:22px;margin-bottom:10px}
+    .cta p{color:var(--text-secondary);font-size:13.5px;margin-bottom:20px}
+    .cta a.btn{display:inline-block;width:auto;padding:13px 34px;text-decoration:none}
+    footer{border-top:1px solid var(--dark-border);padding:26px 20px;text-align:center;color:var(--text-secondary);font-size:12px}
+
+    @media(max-width:880px){
+        .hero-grid{grid-template-columns:1fr}
+        h1{font-size:29px}
+        .grid3{grid-template-columns:1fr}
+        .flow{grid-template-columns:1fr 1fr}
+        .row{flex-direction:column;gap:0}
+    }
+</style>
+</head>
+<body>
+
+<div class="nav">
+    <div class="brand"><span class="brand-logo">📊</span> pDOOH 社区智能屏</div>
+    <div class="nav-phone">咨询热线 <b>400-000-0000</b></div>
+</div>
+
+<div class="hero">
+    <div class="wrap hero-grid">
+        <div>
+            <div class="tag">🎯 粤港澳大湾区 · 社区场景户外广告</div>
+            <h1>让品牌走进 <em>2368 个社区点位</em><br>触达真正会买单的人</h1>
+            <p class="lead">覆盖广州 / 深圳 / 佛山 / 东莞 / 珠海 5 城核心社区，智能屏、门禁、道闸、电梯框架全场景组合投放。留下联系方式，1 个工作日内获得专属投放方案与点位清单。</p>
+            <div class="stats">
+                <div class="stat"><b>2,368</b><span>社区点位</span></div>
+                <div class="stat"><b>5</b><span>覆盖城市</span></div>
+                <div class="stat"><b>126</b><span>社区单元</span></div>
+                <div class="stat"><b>3.8</b><span>平均 ROI</span></div>
+            </div>
+            <div class="points">
+                <span class="point">📺 智能屏</span>
+                <span class="point">🚪 门禁屏</span>
+                <span class="point">🚧 道闸</span>
+                <span class="point">🛗 电梯框架</span>
+            </div>
+        </div>
+
+        <div class="form-card">
+            <h2>免费获取投放方案</h2>
+            <div class="sub">填写后我们的户外广告顾问会主动联系您，全程无费用</div>
+            <div id="env-banner"></div>
+            <form id="lead-form" autocomplete="on">
+                <div class="row">
+                    <div class="field">
+                        <label>公司名称 <i>*</i></label>
+                        <input name="name" id="lf-name" placeholder="如：某某食品有限公司" required maxlength="60">
+                    </div>
+                    <div class="field">
+                        <label>联系人 <i>*</i></label>
+                        <input name="contact" id="lf-contact" placeholder="如：张经理" required maxlength="20">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="field">
+                        <label>联系电话 <i>*</i></label>
+                        <input name="phone" id="lf-phone" placeholder="如：138-0000-0000" required inputmode="tel" maxlength="20">
+                    </div>
+                    <div class="field">
+                        <label>所在行业</label>
+                        <select name="industry" id="lf-industry">
+                            <option value="">请选择</option>
+                            <option>快消饮料</option><option>汽车</option><option>日化</option>
+                            <option>乳制品</option><option>调味品</option><option>冷冻食品</option>
+                            <option>医药健康</option><option>家居建材</option><option>教育培训</option>
+                            <option>金融保险</option><option>其他</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="field">
+                        <label>意向预算（万元）</label>
+                        <input name="budgetWan" id="lf-budget" type="number" min="0" step="1" placeholder="如：30">
+                    </div>
+                    <div class="field">
+                        <label>邮箱（选填）</label>
+                        <input name="email" id="lf-email" type="email" placeholder="name@company.com" maxlength="60">
+                    </div>
+                </div>
+                <div class="field">
+                    <label>投放需求描述</label>
+                    <textarea name="message" id="lf-message" rows="3" maxlength="300" placeholder="如：想在广州、深圳的社区做 Q4 新品曝光，重点覆盖 25-40 岁家庭人群"></textarea>
+                </div>
+                <button class="btn" type="submit" id="lf-submit">立即获取方案 →</button>
+                <div class="privacy">提交即表示同意我们与您联系。<br>您的信息仅用于投放方案沟通，不会对外提供。</div>
+                <div class="msg" id="lf-msg"></div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<section>
+    <div class="wrap">
+        <h3 class="sec">为什么选择社区场景投放</h3>
+        <p class="sec-sub">社区是家庭消费决策的最后一公里</p>
+        <div class="grid3">
+            <div class="card">
+                <div class="ico">🏘️</div>
+                <h4>高频触达</h4>
+                <p>居民每天进出社区 2~4 次，智能屏与门禁屏形成强制曝光，日均触达远超传统户外大牌。</p>
+            </div>
+            <div class="card">
+                <div class="ico">🎯</div>
+                <h4>人群精准</h4>
+                <p>按社区档次、家庭结构、消费能力筛选点位，把钱花在真正会买单的人群上。</p>
+            </div>
+            <div class="card">
+                <div class="ico">📈</div>
+                <h4>效果可测</h4>
+                <p>投放数据实时回流至 AI 经营决策中心，ROI、点位效果、素材表现全链路可追踪。</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section style="padding-top:0">
+    <div class="wrap">
+        <h3 class="sec">合作流程</h3>
+        <p class="sec-sub">从留资到上刊，最快 3 个工作日</p>
+        <div class="flow">
+            <div class="step"><div class="n">1</div><h5>提交需求</h5><p>填写右侧表单，1 个工作日内顾问联系</p></div>
+            <div class="step"><div class="n">2</div><h5>方案定制</h5><p>按预算与目标人群输出点位组合与报价</p></div>
+            <div class="step"><div class="n">3</div><h5>签约上刊</h5><p>电子签约，AI 素材中心快速产出投放素材</p></div>
+            <div class="step"><div class="n">4</div><h5>效果复盘</h5><p>投放数据实时可视，按周输出效果报告</p></div>
+        </div>
+    </div>
+</section>
+
+<section style="padding-top:0">
+    <div class="wrap cta">
+        <h3>已经有 200+ 品牌在社区里被看见</h3>
+        <p>留下联系方式，获取专属点位清单与投放报价</p>
+        <a class="btn" href="#lead-form" onclick="document.getElementById('lf-name').focus();return false;">免费获取投放方案</a>
+    </div>
+</section>
+
+<footer>
+    pDOOH 社区智能屏 · 粤港澳大湾区社区场景户外广告平台<br>
+    本页为获客留资页，提交的信息将实时进入经营决策系统由顾问跟进。
+</footer>
+
+<script>
+(function () {
+    // ── 1. 确定接口地址 ───────────────────────────────────────────
+    // 正常情况（http/https 访问）用同源；若有人直接双击本地文件打开（file://），
+    // 相对路径会解析成 file:///api/... 导致 fetch 直接失败，因此这里做自动兜底。
+    var TOKEN = new URLSearchParams(location.search).get('token') || '';
+    var API_BASE = (new URLSearchParams(location.search).get('api') || '').replace(/\/$/, '');
+
+    var form = document.getElementById('lead-form');
+    var msg = document.getElementById('lf-msg');
+    var btn = document.getElementById('lf-submit');
+    var banner = document.getElementById('env-banner');
+    var isFile = location.protocol === 'file:';
+
+    function showBanner(text, kind) {
+        banner.innerHTML = text;
+        banner.className = 'show ' + kind;
+    }
+    function show(text, kind) {
+        msg.textContent = text;
+        msg.className = 'msg ' + kind;
+    }
+
+    // ── 部署配置：file:// 打开时优先尝试的接口地址 ──────────────
+    // 本机开发无需修改；若要把这个页面单独拷到别的机器上用，
+    // 请把你的服务地址填进来（局域网 IP 或公网隧道域名），例如：
+    //   var FALLBACK_APIS = ['http://192.168.1.100:5003', 'https://xxx.trycloudflare.com'];
+    // 也可在网址后加 ?api=http://主机:5003 临时指定
+    var FALLBACK_APIS = ['http://127.0.0.1:5003', 'http://localhost:5003'];
+
+    // file:// 打开时，依次探测常见地址，找到一个可用的就自动接上
+    async function detectApiBase() {
+        var candidates = FALLBACK_APIS;
+        showBanner('⚠️ 检测到你是<b>直接打开本地文件</b>（file://），正在自动寻找后台服务…', 'err');
+        for (var i = 0; i < candidates.length; i++) {
+            try {
+                var r = await fetch(candidates[i] + '/api/health', { cache: 'no-store' });
+                if (r.ok) {
+                    API_BASE = candidates[i];
+                    showBanner('✅ 已自动连接后台服务：<code>' + API_BASE + '</code>　可直接提交。'
+                        + '<br>（建议改用正式网址访问，例如 <code>' + API_BASE + '/lead.html</code>）', 'ok');
+                    return;
+                }
+            } catch (e) { /* 试下一个 */ }
+        }
+        showBanner('❌ 页面是以本地文件方式打开的，且未探测到后台服务。<br>请改用服务地址访问：'
+            + '<code>http://&lt;你的服务地址&gt;:5003/lead.html</code>，'
+            + '或在网址后加 <code>?api=http://你的服务地址:5003</code> 手动指定。', 'err');
+    }
+
+    if (isFile) { detectApiBase(); }
+
+    // ── 2. 提交 ───────────────────────────────────────────────────
+    form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var val = function (id) { return (document.getElementById(id).value || '').trim(); };
+        var payload = {
+            name: val('lf-name'),
+            contact: val('lf-contact'),
+            phone: val('lf-phone'),
+            industry: val('lf-industry'),
+            budgetWan: Number(val('lf-budget')) || 0,
+            email: val('lf-email'),
+            message: val('lf-message'),
+            source: '官网留资'
+        };
+
+        if (!payload.name || !payload.contact || !payload.phone) {
+            return show('请填写公司名称、联系人和联系电话', 'err');
+        }
+        if (!/^[\d\-+() ]{6,20}$/.test(payload.phone)) {
+            return show('联系电话格式不正确，请检查后重试', 'err');
+        }
+        if (isFile && !API_BASE) {
+            return show('当前是本地文件方式打开，未连接后台服务，无法提交。请改用服务地址访问。', 'err');
+        }
+
+        var url = API_BASE + '/api/public/lead' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : '');
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+
+        var res, json;
+        try {
+            res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } catch (err) {
+            // 网络层失败：把真实原因说清楚，不再用笼统的"网络异常"
+            show('无法连接服务器（' + (err && err.message ? err.message : '网络错误') + '）。'
+               + '接口地址：' + url + '　请确认服务已启动且地址正确。', 'err');
+            btn.disabled = false; btn.textContent = '立即获取方案 →';
+            return;
+        }
+
+        var raw = '';
+        try { raw = await res.text(); } catch (e) { raw = ''; }
+        try { json = JSON.parse(raw); } catch (e) {
+            show('服务器返回了非预期内容（HTTP ' + res.status + '）。接口地址：' + url
+               + (raw ? '　返回片段：' + raw.slice(0, 120) : ''), 'err');
+            btn.disabled = false; btn.textContent = '立即获取方案 →';
+            return;
+        }
+
+        var data = json.data || {};
+        if (json.ok && data.ok) {
+            show(data.message || '提交成功！我们的顾问会尽快与您联系。', 'ok');
+            form.reset();
+            btn.textContent = '已提交 ✓';
+        } else {
+            show((data && data.message) || json.message || ('提交失败（HTTP ' + res.status + '）'), 'err');
+            btn.disabled = false; btn.textContent = '立即获取方案 →';
+        }
+    });
+})();
+</script>
+</body>
+</html>

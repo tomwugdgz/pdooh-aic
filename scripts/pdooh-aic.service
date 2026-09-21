@@ -1,0 +1,30 @@
+[Unit]
+Description=pDOOH AI 经营决策中心 (Node.js + SQLite)
+Documentation=file:///home/tom/deepseek/pdooh-aic/README.md
+After=network.target
+
+[Service]
+Type=simple
+User=tom
+Group=tom
+WorkingDirectory=/home/tom/deepseek/pdooh-aic
+Environment=NODE_ENV=production
+Environment=PORT=5003
+Environment=HOST=0.0.0.0
+ExecStart=/home/tom/.local/bin/node /home/tom/deepseek/pdooh-aic/server.js
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/tom/deepseek/pdooh-aic/data/pdooh.log
+StandardError=append:/home/tom/deepseek/pdooh-aic/data/pdooh.log
+
+[Install]
+WantedBy=multi-user.target
+
+# ------------------------------------------------------------
+# 安装方式（需要 root）：
+#   sudo cp scripts/pdooh-aic.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pdooh-aic
+#   sudo systemctl status pdooh-aic
+# 未安装 systemd 服务时，可用 scripts/start.sh 守护启动。
+# ------------------------------------------------------------
