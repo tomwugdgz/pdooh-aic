@@ -800,19 +800,46 @@ GROUP BY c.id ORDER BY 点位数 DESC;</textarea>
                 <div class="page-grid cols-2-1">
                     <div class="data-card">
                         <div class="data-card-header">
-                            <div class="data-card-title">🕐 今日日程</div>
-                            <span class="badge badge-primary">${d.schedule.length} 项</span>
+                            <div class="data-card-title">🕐 工作日程</div>
+                            <div style="display:flex;gap:6px;align-items:center;">
+                                <button class="btn btn-ghost btn-sm" onclick="schedShift(-1)" title="前一天">‹</button>
+                                <input type="date" id="sched-date" value="${d.scheduleDate || ''}"
+                                    onchange="loadSchedule(this.value)"
+                                    style="background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:6px;padding:4px 8px;font-size:12px;">
+                                <button class="btn btn-ghost btn-sm" onclick="schedShift(1)" title="后一天">›</button>
+                                <button class="btn btn-ghost btn-sm" onclick="loadSchedule('')" title="回到今天">今天</button>
+                                <button class="btn btn-ghost btn-sm" onclick="openScheduleExport()">📊 导出</button>
+                                <button class="btn btn-primary btn-sm" onclick="openScheduleForm()">＋ 新增</button>
+                            </div>
                         </div>
-                        <div class="list">
-                            ${d.schedule.map(s => `
-                                <div class="list-item">
+                        <div style="padding:0 4px 8px 4px;font-size:12px;color:var(--text-secondary);">
+                            <span id="sched-summary">${(d.scheduleStats && d.scheduleStats.total) || 0} 项 · 待办 ${(d.scheduleStats && d.scheduleStats.pending) || 0} · 已完成 ${(d.scheduleStats && d.scheduleStats.done) || 0}</span>
+                        </div>
+                        <div class="list" id="sched-list">
+                            ${(d.schedule || []).length === 0
+                                ? '<div style="padding:28px;text-align:center;color:var(--text-secondary);font-size:13px;">这一天还没有日程，点右上角「＋ 新增」添加</div>'
+                                : (d.schedule || []).map(s => `
+                                <div class="list-item" style="${s.status === 'done' ? 'opacity:.62;' : ''}">
                                     <div class="list-item-avatar" style="background: var(--gradient-secondary);">${s.icon}</div>
                                     <div class="list-item-main">
-                                        <div class="list-item-title">${s.title}</div>
-                                        <div class="list-item-meta"><span>${s.time}</span><span>·</span><span>${s.type}</span></div>
+                                        <div class="list-item-title" style="${s.status === 'done' ? 'text-decoration:line-through;' : ''}">
+                                            ${escapeHtml(s.title)}
+                                            <span class="badge badge-${s.status === 'done' ? 'success' : s.status === 'canceled' ? 'danger' : 'info'}" style="margin-left:6px;font-size:10px;">
+                                                ${s.status === 'done' ? '已完成' : s.status === 'canceled' ? '已取消' : '待进行'}
+                                            </span>
+                                        </div>
+                                        <div class="list-item-meta">
+                                            <span>🕐 ${s.time}${s.endTime ? '–' + s.endTime : ''}</span>
+                                            <span>·</span><span>${escapeHtml(s.type)}</span>
+                                            ${s.note ? `<span>·</span><span>📝 ${escapeHtml(s.note)}</span>` : ''}
+                                        </div>
                                     </div>
-                                </div>
-                            `).join('')}
+                                    <div class="list-item-actions">
+                                        <button class="btn btn-ghost btn-sm" onclick="toggleScheduleDone(${s.id})" title="${s.status === 'done' ? '标记为待进行' : '标记为完成'}">${s.status === 'done' ? '↩️' : '✅'}</button>
+                                        <button class="btn btn-ghost btn-sm" onclick="openScheduleForm(${s.id})" title="编辑">✏️</button>
+                                        <button class="btn btn-ghost btn-sm" onclick="deleteScheduleItem(${s.id})" title="删除">🗑</button>
+                                    </div>
+                                </div>`).join('')}
                         </div>
                     </div>
                     <div class="page-grid" style="gap: 20px;">
@@ -2020,6 +2047,235 @@ GROUP BY c.id ORDER BY 点位数 DESC;</textarea>
             } catch (e) {
                 showToast('刷新失败: ' + e.message, 'danger');
             }
+        }
+
+        // ==================== 工作日程 CRUD + 导出 ====================
+        const SCHED_TYPES = ['会议', '客户', '合同', '巡检', '内部', '其他'];
+        const SCHED_ICON = { 会议: '🎯', 客户: '🤝', 合同: '📝', 巡检: '📍', 内部: '🤖', 其他: '📌' };
+
+        function schedDate() {
+            const el = document.getElementById('sched-date');
+            return (el && el.value) || (MOCK.dashboard && MOCK.dashboard.scheduleDate) || '';
+        }
+
+        async function loadSchedule(date) {
+            try {
+                const d = await API.get('/api/schedule' + (date ? '?date=' + encodeURIComponent(date) : ''));
+                if (!MOCK.dashboard) MOCK.dashboard = {};
+                MOCK.dashboard.schedule = d.items;
+                MOCK.dashboard.scheduleDate = d.date;
+                MOCK.dashboard.scheduleStats = d.stats;
+                // 只重绘工作台，保留实时引擎运行
+                const el = document.getElementById('page-dashboard');
+                if (el) el.innerHTML = renderDashboard();
+            } catch (e) { showToast('日程加载失败: ' + e.message, 'danger'); }
+        }
+
+        function schedShift(delta) {
+            const cur = schedDate();
+            const d = new Date(cur + 'T00:00:00');
+            d.setDate(d.getDate() + delta);
+            const p = n => String(n).padStart(2, '0');
+            loadSchedule(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`);
+        }
+
+        function openScheduleForm(id) {
+            const list = (MOCK.dashboard && MOCK.dashboard.schedule) || [];
+            const it = id ? list.find(x => x.id === id) : null;
+            const cur = schedDate();
+            if (document.getElementById('sched-form')) document.getElementById('sched-form').remove();
+            const box = document.createElement('div');
+            box.id = 'sched-form';
+            box.style.cssText = 'position:fixed;inset:0;background:rgba(2,6,23,.82);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
+            box.innerHTML = `
+                <div style="background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);width:min(560px,100%);padding:22px;">
+                    <div style="font-weight:700;font-size:17px;margin-bottom:4px;">${it ? '✏️ 编辑日程' : '＋ 新增日程'}</div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;">保存后立即写入数据库，并计入「工作日程导出」</div>
+                    <div style="display:flex;gap:12px;margin-bottom:12px;">
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">日期</div>
+                            <input id="sf-date" type="date" value="${it ? it.date : cur}" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                        </div>
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">类型</div>
+                            <select id="sf-type" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                                ${SCHED_TYPES.map(t => `<option value="${t}" ${it && it.type === t ? 'selected' : ''}>${SCHED_ICON[t]} ${t}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">日程标题 *</div>
+                        <input id="sf-title" placeholder="如：宝马华南区提案" value="${it ? String(it.title).replace(/"/g, '&quot;') : ''}"
+                            style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                    </div>
+                    <div style="display:flex;gap:12px;margin-bottom:12px;">
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">开始时间 *（HH:MM）</div>
+                            <input id="sf-time" placeholder="09:30" value="${it ? it.time : '09:00'}" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                        </div>
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">结束时间（可空）</div>
+                            <input id="sf-end" placeholder="10:30" value="${it ? it.endTime : ''}" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                        </div>
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">状态</div>
+                            <select id="sf-status" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                                <option value="pending" ${it && it.status === 'pending' ? 'selected' : ''}>待进行</option>
+                                <option value="done" ${it && it.status === 'done' ? 'selected' : ''}>已完成</option>
+                                <option value="canceled" ${it && it.status === 'canceled' ? 'selected' : ''}>已取消</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">备注（地点 / 参与人 / 要点）</div>
+                        <textarea id="sf-note" rows="2" placeholder="如：会议室 A · 全员参加" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">${it && it.note ? it.note : ''}</textarea>
+                    </div>
+                    <div style="display:flex;gap:10px;justify-content:flex-end;">
+                        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('sched-form').remove()">取消</button>
+                        <button class="btn btn-primary btn-sm" onclick="submitScheduleForm(${it ? it.id : 'null'})">${it ? '保存修改' : '确认新增'}</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(box);
+        }
+
+        async function submitScheduleForm(id) {
+            const v = k => { const el = document.getElementById('sf-' + k); return el ? el.value.trim() : ''; };
+            const payload = {
+                date: v('date'), time: v('time'), endTime: v('end'),
+                title: v('title'), type: v('type'), note: v('note'), status: v('status')
+            };
+            if (!payload.title) return showToast('日程标题必填', 'warning');
+            if (!/^\d{1,2}:\d{2}$/.test(payload.time)) return showToast('开始时间格式应为 HH:MM', 'warning');
+            if (payload.endTime && !/^\d{1,2}:\d{2}$/.test(payload.endTime)) return showToast('结束时间格式应为 HH:MM', 'warning');
+            try {
+                if (id) payload.id = id;
+                const r = await API.post(id ? '/api/schedule/update' : '/api/schedule/create', payload);
+                document.getElementById('sched-form').remove();
+                showToast(id ? '日程已更新' : '日程已新增', 'success');
+                await loadSchedule(payload.date);
+            } catch (e) { showToast('保存失败: ' + e.message, 'danger'); }
+        }
+
+        async function deleteScheduleItem(id) {
+            const it = ((MOCK.dashboard && MOCK.dashboard.schedule) || []).find(x => x.id === id);
+            if (!confirm(`确认删除日程「${it ? it.title : id}」？`)) return;
+            try {
+                await API.post('/api/schedule/delete', { id });
+                showToast('日程已删除', 'warning');
+                await loadSchedule(schedDate());
+            } catch (e) { showToast('删除失败: ' + e.message, 'danger'); }
+        }
+
+        async function toggleScheduleDone(id) {
+            const it = ((MOCK.dashboard && MOCK.dashboard.schedule) || []).find(x => x.id === id);
+            if (!it) return;
+            const next = it.status === 'done' ? 'pending' : 'done';
+            try {
+                await API.post('/api/schedule/update', { id, status: next });
+                showToast(next === 'done' ? `已完成「${it.title}」` : `「${it.title}」已恢复为待进行`, 'success');
+                await loadSchedule(schedDate());
+            } catch (e) { showToast('操作失败: ' + e.message, 'danger'); }
+        }
+
+        // ---------- 日程导出（Excel / CSV）----------
+        function openScheduleExport() {
+            if (document.getElementById('sched-export')) return;
+            const today = schedDate() || new Date().toISOString().slice(0, 10);
+            const from = new Date(today + 'T00:00:00'); from.setDate(from.getDate() - 7);
+            const to = new Date(today + 'T00:00:00'); to.setDate(to.getDate() + 7);
+            const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+            const box = document.createElement('div');
+            box.id = 'sched-export';
+            box.style.cssText = 'position:fixed;inset:0;background:rgba(2,6,23,.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
+            box.innerHTML = `
+                <div style="background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);width:min(620px,100%);padding:22px;">
+                    <div style="font-weight:700;font-size:17px;margin-bottom:4px;">📊 导出工作日程</div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:18px;">选择时间段，导出该区间全部日程，可直接喂给 AI 做时间分配分析</div>
+
+                    <div style="display:flex;gap:12px;margin-bottom:14px;">
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">开始日期</div>
+                            <input id="se-from" type="date" value="${iso(from)}" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                        </div>
+                        <div style="flex:1;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">结束日期</div>
+                            <input id="se-to" type="date" value="${iso(to)}" style="width:100%;padding:9px;background:var(--dark-bg);color:var(--text-primary);border:1px solid var(--dark-border);border-radius:8px;">
+                        </div>
+                    </div>
+
+                    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+                        <button class="btn btn-ghost btn-sm" onclick="seRange(7)">近 7 天</button>
+                        <button class="btn btn-ghost btn-sm" onclick="seRange(14)">近 14 天</button>
+                        <button class="btn btn-ghost btn-sm" onclick="seRange(30)">近 30 天</button>
+                        <button class="btn btn-ghost btn-sm" onclick="seRange(0,7)">未来 7 天</button>
+                        <button class="btn btn-ghost btn-sm" onclick="seRange(0,30)">未来 30 天</button>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+                        <div style="border:1px solid var(--dark-border);border-radius:10px;padding:14px;background:var(--dark-bg);">
+                            <div style="font-weight:600;margin-bottom:6px;">📗 Excel (.xlsx)</div>
+                            <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:10px;">
+                                带表头样式、冻结首行、自动筛选；含日期/星期/时间段/标题/类型/状态/备注
+                            </div>
+                            <button class="btn btn-primary btn-sm" style="width:100%;" onclick="doScheduleExport('xlsx')">下载 Excel</button>
+                        </div>
+                        <div style="border:1px solid var(--dark-border);border-radius:10px;padding:14px;background:var(--dark-bg);">
+                            <div style="font-weight:600;margin-bottom:6px;">📄 CSV</div>
+                            <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:10px;">
+                                纯文本表格，方便直接粘贴给 AI 分析，或导入其他系统
+                            </div>
+                            <button class="btn btn-primary btn-sm" style="width:100%;" onclick="doScheduleExport('csv')">下载 CSV</button>
+                        </div>
+                    </div>
+
+                    <div id="se-preview" style="font-size:12.5px;color:var(--text-secondary);padding:12px;background:var(--dark-bg);border:1px solid var(--dark-border);border-radius:10px;line-height:1.8;">
+                        选择时间段后会自动统计区间内的日程条数
+                    </div>
+
+                    <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+                        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('sched-export').remove()">关闭</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(box);
+            ['se-from', 'se-to'].forEach(id => document.getElementById(id).addEventListener('change', previewScheduleExport));
+            previewScheduleExport();
+        }
+
+        function seRange(backDays, fwdDays) {
+            const today = new Date();
+            const a = new Date(today); a.setDate(a.getDate() - (fwdDays !== undefined ? 0 : backDays));
+            const b = new Date(today); b.setDate(b.getDate() + (fwdDays !== undefined ? fwdDays : 0));
+            const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            document.getElementById('se-from').value = iso(a);
+            document.getElementById('se-to').value = iso(b);
+            previewScheduleExport();
+        }
+
+        async function previewScheduleExport() {
+            const from = document.getElementById('se-from').value;
+            const to = document.getElementById('se-to').value;
+            const el = document.getElementById('se-preview');
+            if (!from || !to) { el.textContent = '请选择开始与结束日期'; return; }
+            if (from > to) { el.innerHTML = '<span style="color:var(--danger);">开始日期不能晚于结束日期</span>'; return; }
+            try {
+                const d = await API.get(`/api/schedule/range?from=${from}&to=${to}`);
+                const byType = {};
+                d.items.forEach(i => byType[i.type] = (byType[i.type] || 0) + 1);
+                const days = new Set(d.items.map(i => i.date)).size;
+                el.innerHTML = `区间 <b style="color:var(--accent);">${d.from} ~ ${d.to}</b>：共 <b style="color:var(--accent);">${d.count}</b> 条日程，覆盖 <b style="color:var(--accent);">${days}</b> 天` +
+                    (d.count ? `<br>类型分布：${Object.entries(byType).map(([k, v]) => `${k} ${v}`).join(' · ')}` : '');
+            } catch (e) { el.textContent = '统计失败: ' + e.message; }
+        }
+
+        function doScheduleExport(fmt) {
+            const from = document.getElementById('se-from').value;
+            const to = document.getElementById('se-to').value;
+            if (!from || !to) return showToast('请选择日期区间', 'warning');
+            if (from > to) return showToast('开始日期不能晚于结束日期', 'warning');
+            showToast(`正在生成 ${fmt.toUpperCase()} ...`, 'info');
+            window.location.href = apiPath(`/api/export/schedule.${fmt}?from=${from}&to=${to}`);
+            setTimeout(() => showToast('导出已开始下载', 'success'), 700);
         }
 
         // ==================== 数据库导出 ====================

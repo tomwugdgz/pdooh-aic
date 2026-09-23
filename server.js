@@ -77,6 +77,26 @@ function migrate() {
   db.exec("UPDATE customers SET created_at = datetime('now','localtime') WHERE created_at = ''");
   db.exec("UPDATE customers SET updated_at = datetime('now','localtime') WHERE updated_at = ''");
 
+  // 日程表扩展：日期 / 结束时间 / 备注 / 状态
+  const schedCols = q.all('PRAGMA table_info(schedule_items)').map(c => c.name);
+  const addSched = (name, ddl) => {
+    if (!schedCols.includes(name)) {
+      db.exec(`ALTER TABLE schedule_items ADD COLUMN ${ddl}`);
+      console.log(`[db] 迁移: schedule_items += ${name}`);
+    }
+  };
+  addSched('sched_date', "sched_date TEXT NOT NULL DEFAULT ''");
+  addSched('end_time', "end_time TEXT NOT NULL DEFAULT ''");
+  addSched('note', "note TEXT NOT NULL DEFAULT ''");
+  addSched('status', "status TEXT NOT NULL DEFAULT 'pending'");
+  addSched('created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  addSched('updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+  // 老数据没有日期：归到今天，避免升级后日程"消失"
+  db.exec("UPDATE schedule_items SET sched_date = date('now','localtime') WHERE sched_date = ''");
+  db.exec("UPDATE schedule_items SET created_at = datetime('now','localtime') WHERE created_at = ''");
+  db.exec("UPDATE schedule_items SET updated_at = datetime('now','localtime') WHERE updated_at = ''");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule_items(sched_date)');
+
   const logCols = q.all('PRAGMA table_info(follow_logs)').map(c => c.name);
   if (!logCols.includes('kind')) {
     db.exec("ALTER TABLE follow_logs ADD COLUMN kind TEXT NOT NULL DEFAULT 'follow'");
@@ -129,12 +149,113 @@ const money = v => '¥' + Number(v).toLocaleString('zh-CN', { maximumFractionDig
 // ============================================================
 //  模块 01 今日工作台
 // ============================================================
-const getDashboard = () => ({
-  stats: q.all('SELECT label, value, icon, color, trend FROM dashboard_stats ORDER BY sort_order'),
-  schedule: q.all('SELECT time, title, type, icon FROM schedule_items ORDER BY sort_order'),
-  reminders: q.all('SELECT icon, text, color FROM reminders ORDER BY sort_order'),
-  team: q.all('SELECT name, avatar, status, task FROM team_members ORDER BY sort_order')
+const SCHEDULE_TYPES = ['会议', '客户', '合同', '巡检', '内部', '其他'];
+const TYPE_ICON = { 会议: '🎯', 客户: '🤝', 合同: '📝', 巡检: '📍', 内部: '🤖', 其他: '📌' };
+
+const mapSchedule = r => ({
+  id: r.id, date: r.sched_date, time: r.time, endTime: r.end_time, title: r.title,
+  type: r.type, icon: r.icon, note: r.note, status: r.status,
+  done: r.status === 'done', createdAt: r.created_at
 });
+
+/** 按日期查日程；date 省略则取今天 */
+function getSchedule(date) {
+  const d = date || q.get("SELECT date('now','localtime') AS d").d;
+  return {
+    date: d,
+    items: q.all('SELECT * FROM schedule_items WHERE sched_date = ? ORDER BY time, sort_order, id', d).map(mapSchedule),
+    stats: scheduleStats(d)
+  };
+}
+
+function scheduleStats(date) {
+  return q.get(`SELECT COUNT(*) AS total,
+      SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
+      SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS canceled
+    FROM schedule_items WHERE sched_date = ?`, date);
+}
+
+/** 日期区间查询（用于导出） */
+function getScheduleRange(from, to) {
+  return q.all(`SELECT * FROM schedule_items WHERE sched_date BETWEEN ? AND ?
+      ORDER BY sched_date, time, sort_order, id`, from, to).map(mapSchedule);
+}
+
+const cleanDate = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+const cleanTime = v => {
+  const t = String(v || '').trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+  if (!m) return '';
+  const h = Number(m[1]), mi = Number(m[2]);
+  // 必须校验取值范围，否则 25:99 这种"格式对但时间不存在"的值会被存进库
+  if (h > 23 || mi > 59) return '';
+  return String(h).padStart(2, '0') + ':' + m[2];
+};
+
+function createSchedule(body) {
+  const date = cleanDate(body.date) || q.get("SELECT date('now','localtime') AS d").d;
+  const time = cleanTime(body.time);
+  const title = String(body.title || '').trim();
+  if (!time) return { ok: false, error: 'BAD_REQUEST', message: '开始时间格式应为 HH:MM' };
+  if (!title) return { ok: false, error: 'BAD_REQUEST', message: '日程标题必填' };
+  const type = SCHEDULE_TYPES.includes(body.type) ? body.type : '其他';
+  const icon = TYPE_ICON[type] || '📌';
+  const res = q.run(`INSERT INTO schedule_items (sched_date, time, end_time, title, type, icon, note, status, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?)`,
+    date, time, cleanTime(body.endTime), title, type, icon, String(body.note || ''),
+    ['pending', 'done', 'canceled'].includes(body.status) ? body.status : 'pending',
+    Number(body.sortOrder) || 99);
+  logActivity('SCHEDULE_CREATE', String(res.lastInsertRowid), `${date} ${time} ${title}`);
+  return { ok: true, id: Number(res.lastInsertRowid), date, item: getSchedule(date).items.find(i => i.id === Number(res.lastInsertRowid)) };
+}
+
+function updateSchedule(body) {
+  const id = Number(body.id);
+  const row = q.get('SELECT * FROM schedule_items WHERE id = ?', id);
+  if (!row) return { ok: false, error: 'NOT_FOUND', message: '日程不存在: ' + body.id };
+  const map = { date: 'sched_date', time: 'time', endTime: 'end_time', title: 'title', type: 'type', note: 'note', status: 'status', sortOrder: 'sort_order' };
+  const sets = [], args = [], changed = [];
+  for (const [k, col] of Object.entries(map)) {
+    if (body[k] === undefined) continue;
+    let v = body[k];
+    if (k === 'date') { v = cleanDate(v) || row.sched_date; }
+    if (k === 'time' || k === 'endTime') { v = cleanTime(v); if (k === 'time' && !v) return { ok: false, error: 'BAD_REQUEST', message: '开始时间格式应为 HH:MM' }; }
+    if (k === 'title') { v = String(v).trim(); if (!v) return { ok: false, error: 'BAD_REQUEST', message: '日程标题不能为空' }; }
+    if (k === 'type') { v = SCHEDULE_TYPES.includes(v) ? v : row.type; sets.push('icon = ?'); args.push(TYPE_ICON[v] || '📌'); }
+    sets.push(`${col} = ?`); args.push(v); changed.push(k);
+  }
+  if (!sets.length) return { ok: false, error: 'BAD_REQUEST', message: '没有需要更新的字段' };
+  sets.push("updated_at = datetime('now','localtime')");
+  args.push(id);
+  q.run(`UPDATE schedule_items SET ${sets.join(', ')} WHERE id = ?`, ...args);
+  logActivity('SCHEDULE_UPDATE', String(id), `${row.sched_date} ${row.title} ← ${changed.join('、')}`);
+  const nd = body.date ? cleanDate(body.date) : row.sched_date;
+  return { ok: true, item: getSchedule(nd).items.find(i => i.id === id) };
+}
+
+function deleteSchedule(id) {
+  const row = q.get('SELECT * FROM schedule_items WHERE id = ?', Number(id));
+  if (!row) return { ok: false, error: 'NOT_FOUND', message: '日程不存在: ' + id };
+  q.run('DELETE FROM schedule_items WHERE id = ?', Number(id));
+  logActivity('SCHEDULE_DELETE', String(id), `${row.sched_date} ${row.time} ${row.title}`);
+  return { ok: true, id: Number(id), title: row.title };
+}
+
+const getDashboard = () => {
+  const today = q.get("SELECT date('now','localtime') AS d").d;
+  const sched = getSchedule(today);
+  return {
+    stats: q.all('SELECT label, value, icon, color, trend FROM dashboard_stats ORDER BY sort_order'),
+    schedule: sched.items,
+    scheduleDate: today,
+    scheduleStats: sched.stats,
+    // 供前端日期导航：有日程的日期列表
+    scheduleDates: q.all('SELECT DISTINCT sched_date AS d FROM schedule_items ORDER BY sched_date DESC LIMIT 30').map(r => r.d),
+    reminders: q.all('SELECT icon, text, color FROM reminders ORDER BY sort_order'),
+    team: q.all('SELECT name, avatar, status, task FROM team_members ORDER BY sort_order')
+  };
+};
 
 // ---------- 工作台头部：问候语 / 日期 / 实时天气 / 实时 KPI ----------
 const OWNER_NAME = process.env.OWNER_NAME || 'Tom';
@@ -912,6 +1033,241 @@ const getChatHistory = (conversationId = 1) => q.all(
    FROM ai_messages WHERE conversation_id=? ORDER BY id`, conversationId);
 
 // ============================================================
+//  Excel (.xlsx) 生成器 —— 零依赖
+//  xlsx 本质是一个 ZIP，内含 SpreadsheetML XML。
+//  这里手写 ZIP 容器（deflate + CRC32），Excel / WPS / Numbers 均可直接打开。
+// ============================================================
+const zlib = require('node:zlib');
+
+// CRC32 查表
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/** 极简 ZIP 打包（method 8 = deflate） */
+function zipFiles(files) {
+  const chunks = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, 'utf8');
+    const raw = Buffer.from(f.data, 'utf8');
+    const comp = zlib.deflateRawSync(raw, { level: 9 });
+    const crc = crc32(raw);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);       // 本地文件头签名
+    local.writeUInt16LE(20, 4);               // 所需版本
+    local.writeUInt16LE(0x0800, 6);           // 标志位：UTF-8 文件名
+    local.writeUInt16LE(8, 8);                // 压缩方法 deflate
+    local.writeUInt16LE(0, 10);               // 修改时间
+    local.writeUInt16LE(0x21, 12);            // 修改日期（1980-01-01）
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(comp.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);               // 额外字段长度
+    chunks.push(local, nameBuf, comp);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);          // 中央目录签名
+    cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(0x0800, 8); cd.writeUInt16LE(8, 10);
+    cd.writeUInt16LE(0, 12); cd.writeUInt16LE(0x21, 14);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(comp.length, 20);
+    cd.writeUInt32LE(raw.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt16LE(0, 30); cd.writeUInt16LE(0, 32);
+    cd.writeUInt16LE(0, 34); cd.writeUInt16LE(0, 36);
+    cd.writeUInt32LE(0, 38);                  // 外部属性
+    cd.writeUInt32LE(offset, 42);             // 本地头偏移
+    central.push(cd, nameBuf);
+
+    offset += local.length + nameBuf.length + comp.length;
+  }
+  const cdBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4); eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...chunks, cdBuf, eocd]);
+}
+
+const xmlEsc = v => String(v === null || v === undefined ? '' : v)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+  // 去掉 XML 1.0 非法控制字符，否则 Excel 会报文件损坏
+  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+
+function colLetter(n) {
+  let s = '';
+  while (n >= 0) { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; }
+  return s;
+}
+
+/**
+ * 生成 .xlsx Buffer
+ * @param {string} sheetName 工作表名
+ * @param {Array<{title:string, key:string, width?:number, numeric?:boolean}>} columns 列定义
+ * @param {Array<object>} rows 数据行
+ * @param {object} [meta] 附加说明（写入表头下方的注释行）
+ */
+function buildXlsx(sheetName, columns, rows, meta) {
+  const header = columns.map(c => c.title);
+  const sheetRows = [];
+
+  // 标题行（合并说明）
+  let r = 1;
+  if (meta && meta.title) {
+    sheetRows.push({ r, cells: [{ v: meta.title, s: 1 }], span: columns.length });
+    r++;
+  }
+  if (meta && meta.subtitle) {
+    sheetRows.push({ r, cells: [{ v: meta.subtitle, s: 2 }], span: columns.length });
+    r++;
+  }
+  if (meta && (meta.title || meta.subtitle)) { sheetRows.push({ r, cells: [] }); r++; }
+
+  const headerRow = r;
+  sheetRows.push({ r, cells: header.map(h => ({ v: h, s: 3 })) });
+  r++;
+
+  for (const row of rows) {
+    sheetRows.push({
+      r,
+      cells: columns.map(c => {
+        const v = row[c.key];
+        if (c.numeric && v !== null && v !== undefined && v !== '' && !isNaN(Number(v))) return { v: Number(v), n: true };
+        return { v: v === null || v === undefined ? '' : String(v) };
+      })
+    });
+    r++;
+  }
+
+  const COLS = columns.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${c.width || 16}" customWidth="1"/>`).join('');
+
+  const sheetData = sheetRows.map(row => {
+    const cells = row.cells.map((c, i) => {
+      const ref = colLetter(i) + row.r;
+      const style = c.s ? ` s="${c.s}"` : '';
+      if (c.n) return `<c r="${ref}"${style}><v>${c.v}</v></c>`;
+      if (c.v === '' || c.v === undefined) return `<c r="${ref}"${style}/>`;
+      return `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(c.v)}</t></is></c>`;
+    }).join('');
+    const span = row.span ? `<mergeCells count="1"><mergeCell ref="A${row.r}:${colLetter(row.span - 1)}${row.r}"/></mergeCells>` : '';
+    return `<row r="${row.r}">${cells}</row>${span ? '' : ''}`;
+  }).join('');
+
+  // 合并单元格（标题跨列）
+  const merges = sheetRows.filter(x => x.span).map(x => `<mergeCell ref="A${x.r}:${colLetter(x.span - 1)}${x.r}"/>`);
+  // 表头冻结
+  const freeze = `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`;
+  const autoFilter = `<autoFilter ref="A${headerRow}:${colLetter(columns.length - 1)}${sheetRows.length}"/>`;
+
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetPr/><dimension ref="A1:${colLetter(columns.length - 1)}${sheetRows.length}"/>
+${freeze}
+<sheetFormatPr defaultRowHeight="15"/>
+<cols>${COLS}</cols>
+<sheetData>${sheetData}</sheetData>
+${merges.length ? `<mergeCells count="${merges.length}">${merges.join('')}</mergeCells>` : ''}
+${autoFilter}
+</worksheet>`;
+
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="4">
+<font><sz val="11"/><name val="等线"/></font>
+<font><b/><sz val="15"/><color rgb="FF4F46E5"/><name val="等线"/></font>
+<font><sz val="10"/><color rgb="FF64748B"/><name val="等线"/></font>
+<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="等线"/></font>
+</fonts>
+<fills count="3">
+<fill><patternFill patternType="none"/></fill>
+<fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FF6366F1"/><bgColor indexed="64"/></patternFill></fill>
+</fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="4">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="常规" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="${xmlEsc(sheetName).slice(0, 31)}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`;
+
+  return zipFiles([
+    { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>` },
+    { name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>` },
+    { name: 'xl/workbook.xml', data: workbook },
+    { name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>` },
+    { name: 'xl/styles.xml', data: styles },
+    { name: 'xl/worksheets/sheet1.xml', data: sheet }
+  ]);
+}
+
+/** 日程 → 分析用数据集（含派生字段，便于 AI 直接分析） */
+function scheduleDataset(from, to) {
+  const rows = getScheduleRange(from, to);
+  const TYPE_ICON_MAP = { 会议: '🎯', 客户: '🤝', 合同: '📝', 巡检: '📍', 内部: '🤖', 其他: '📌' };
+  const dayMap = {};
+  for (const r of rows) {
+    const s = dayMap[r.date] || (dayMap[r.date] = { date: r.date, total: 0, 会议: 0, 客户: 0, 合同: 0, 巡检: 0, 内部: 0, 其他: 0, done: 0 });
+    s.total++;
+    s[r.type] = (s[r.type] || 0) + 1;
+    if (r.status === 'done') s.done++;
+  }
+  return rows.map(r => ({
+    '日期': r.date,
+    '星期': ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][new Date(r.date + 'T00:00:00').getDay()],
+    '开始时间': r.time,
+    '结束时间': r.endTime || '',
+    '日程标题': r.title,
+    '类型': r.type,
+    '图标': TYPE_ICON_MAP[r.type] || '',
+    '状态': r.status === 'done' ? '已完成' : r.status === 'canceled' ? '已取消' : '待进行',
+    '备注': r.note || ''
+  })).concat([]);
+}
+
+// ============================================================
 //  数据库导出（SQL / JSON / 原始 .db / 单表 CSV）
 // ============================================================
 const os = require('node:os');
@@ -1184,6 +1540,62 @@ const server = http.createServer(async (req, res) => {
         case '/api/ai/history': return sendJson(res, { ok: true, data: getChatHistory(Number(Q.get('conversationId')) || 1) });
         case '/api/activity': return sendJson(res, { ok: true, data: q.all('SELECT * FROM activity_log ORDER BY id DESC LIMIT 50') });
         // ---- 数据库导出 ----
+        // ---- 今日日程 CRUD ----
+        case '/api/schedule':
+          return sendJson(res, { ok: true, data: getSchedule(Q.get('date') || undefined) });
+        case '/api/schedule/range': {
+          const from = cleanDate(Q.get('from')), to = cleanDate(Q.get('to'));
+          if (!from || !to) return sendJson(res, { ok: false, error: 'BAD_REQUEST', message: '需要 from 与 to 参数（YYYY-MM-DD）' }, 400);
+          const rows = getScheduleRange(from, to);
+          return sendJson(res, { ok: true, data: { from, to, count: rows.length, items: rows } });
+        }
+
+        // ---- 日程导出（Excel / CSV）----
+        case '/api/export/schedule.xlsx': {
+          const from = cleanDate(Q.get('from')), to = cleanDate(Q.get('to'));
+          if (!from || !to) return sendJson(res, { ok: false, error: 'BAD_REQUEST', message: '需要 from 与 to 参数' }, 400);
+          const data = scheduleDataset(from, to);
+          const cols = [
+            { title: '日期', key: '日期', width: 13 },
+            { title: '星期', key: '星期', width: 10 },
+            { title: '开始时间', key: '开始时间', width: 11 },
+            { title: '结束时间', key: '结束时间', width: 11 },
+            { title: '日程标题', key: '日程标题', width: 32 },
+            { title: '类型', key: '类型', width: 10 },
+            { title: '状态', key: '状态', width: 10 },
+            { title: '备注', key: '备注', width: 34 }
+          ];
+          const buf = buildXlsx('工作日程', cols, data, {
+            title: `${from} ~ ${to} 工作日程明细`,
+            subtitle: `共 ${data.length} 条日程 · 导出时间 ${nowStr()} · 数据来源：pDOOH AI 经营决策中心`
+          });
+          logActivity('SCHEDULE_EXPORT', 'xlsx', `${from}~${to} / ${data.length} 条`);
+          res.writeHead(200, {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': `attachment; filename="schedule-${from}_${to}.xlsx"`,
+            'Content-Length': buf.length
+          });
+          return res.end(buf);
+        }
+
+        case '/api/export/schedule.csv': {
+          const from = cleanDate(Q.get('from')), to = cleanDate(Q.get('to'));
+          if (!from || !to) return sendJson(res, { ok: false, error: 'BAD_REQUEST', message: '需要 from 与 to 参数' }, 400);
+          const data = scheduleDataset(from, to);
+          const cols = ['日期', '星期', '开始时间', '结束时间', '日程标题', '类型', '状态', '备注'];
+          const esc = v => `"${String(v === null || v === undefined ? '' : v).replace(/"/g, '""')}"`;
+          const lines = [cols.map(esc).join(',')];
+          for (const r of data) lines.push(cols.map(c => esc(r[c])).join(','));
+          const body = '\uFEFF' + lines.join('\r\n');
+          logActivity('SCHEDULE_EXPORT', 'csv', `${from}~${to} / ${data.length} 条`);
+          res.writeHead(200, {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': `attachment; filename="schedule-${from}_${to}.csv"`,
+            'Content-Length': Buffer.byteLength(body)
+          });
+          return res.end(body);
+        }
+
         case '/api/export/tables':
           return sendJson(res, { ok: true, data: { engine: 'SQLite 3', file: path.basename(DB_FILE), tables: listTables() } });
 
@@ -1255,6 +1667,14 @@ const server = http.createServer(async (req, res) => {
           return sendJson(res, { ok: true, data: decidePending(body.code || body.id, body.action, body.note) });
         case '/api/ai/chat':
           return sendJson(res, { ok: true, data: chat(body.question, Number(body.conversationId) || 1) });
+        // ---- 今日日程写操作 ----
+        case '/api/schedule/create':
+          return sendJson(res, { ok: true, data: createSchedule(body) });
+        case '/api/schedule/update':
+          return sendJson(res, { ok: true, data: updateSchedule(body) });
+        case '/api/schedule/delete':
+          return sendJson(res, { ok: true, data: deleteSchedule(body.id) });
+
         case '/api/customers/contact':
           return sendJson(res, { ok: true, data: contactCustomer(body.id, body.note) });
         // ---- 获客 CRM 写操作 ----

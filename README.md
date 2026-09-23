@@ -74,7 +74,7 @@ cd /home/tom/deepseek/pdooh-aic
 
 | 模块 | 表 | 说明 |
 | --- | --- | --- |
-| 01 今日工作台 | `dashboard_stats` `schedule_items` `reminders` `team_members` | 指标卡 / 日程 / 提醒 / 团队 |
+| 01 今日工作台 | `dashboard_stats` `schedule_items` `reminders` `team_members` | 指标卡 / **工作日程（可按日期增删改 + 区间导出）** / 提醒 / 团队 |
 | 02 待确认 | `pending_items` | 点位·合同·素材三类审批，含审批状态与决定时间 |
 | 03 经营决策 | `kpi_metrics` + `revenue_daily` | KPI 卡 + 收入明细（30 天 × 4 渠道 × 5 城市 = 600 行） |
 | 04 作战地图 | `cities` `points` `map_dots` `map_legend` | **2368 条点位明细**（由递归 CTE 按城市配额生成） |
@@ -96,7 +96,7 @@ cd /home/tom/deepseek/pdooh-aic
 
 外键、索引、WAL 模式均已启用；`points` 表上建有 `city_id / point_type / status` 索引。
 
-## 四、API 接口（共 42 个）
+## 四、API 接口（共 47 个）
 
 **读接口**
 
@@ -106,6 +106,10 @@ cd /home/tom/deepseek/pdooh-aic
 | `GET /api/bootstrap` | 16 模块 + KPI + 对话 + 指标（前端一次拉取） |
 | `GET /api/kpi` | 经营决策 4 项 KPI（实时计算） |
 | `GET /api/overview` | **今日工作台实时数据**：问候语（按时段）+ 日期/星期 + 真实天气 + 三项 KPI |
+| `GET /api/schedule?date=` | 指定日期日程（省略则取今天）+ 统计 |
+| `GET /api/schedule/range?from=&to=` | 日期区间日程（导出用） |
+| `GET /api/export/schedule.xlsx?from=&to=` | **工作日程导出为 Excel**（真实 xlsx） |
+| `GET /api/export/schedule.csv?from=&to=` | 工作日程导出为 CSV |
 | `GET /api/dashboard` `GET /api/pending` `GET /api/map` `GET /api/customers` | 模块 01/02/04/05 |
 | `GET /api/sales` `GET /api/campaigns` `GET /api/communities` `GET /api/contracts` | 模块 06/07/08/09 |
 | `GET /api/creatives` `GET /api/agents` `GET /api/tickets` `GET /api/knowledge?kw=` | 模块 10/11/12/13（知识库支持关键词检索） |
@@ -131,6 +135,9 @@ cd /home/tom/deepseek/pdooh-aic
 
 | 接口 | 请求体 | 说明 |
 | --- | --- | --- |
+| `POST /api/schedule/create` | `{date, time, endTime, title, type, note, status}` | **新增日程** |
+| `POST /api/schedule/update` | `{id, ...任意字段}` | **修改日程**（含状态切换） |
+| `POST /api/schedule/delete` | `{id}` | **删除日程** |
 | `POST /api/pending/decision` | `{code, action:'approve'\|'reject', note}` | 审批点位/合同/素材 |
 | `POST /api/ai/chat` | `{question, conversationId}` | 罗姐 AI 问答（SQL 实时计算 + 落库） |
 | `POST /api/customers/contact` | `{id, note}` | 记录客户跟进 |
@@ -353,7 +360,57 @@ node scripts/refresh-demo-data.js --days 60  # 指定天数
 该脚本**只动 `revenue_daily` 与待确认项的剩余天数**，
 不会触碰客户、合同、工单、AI 对话等业务数据。
 
-## 五之四、数据库导出
+## 五之四、工作日程（增删改 + 区间导出）
+
+工作台「🕐 工作日程」卡片支持完整 CRUD，并能按时间段导出给 AI 分析。
+
+### 1. 界面操作
+
+| 操作 | 位置 |
+| --- | --- |
+| 切换日期 | 卡片头部 `‹` / 日期选择器 / `›` / `今天` |
+| 新增 | 卡片头部 **＋ 新增**（日期、类型、标题、起止时间、状态、备注） |
+| 编辑 | 每条日程右侧 ✏️ |
+| 删除 | 每条日程右侧 🗑（二次确认） |
+| 标记完成 | 每条日程右侧 ✅ / ↩️，完成后标题加删除线并置灰 |
+| 导出 | 卡片头部 **📊 导出** |
+
+### 2. 日程数据模型
+
+`schedule_items` 表字段：`sched_date`（归属日期）、`time` / `end_time`（起止时间）、
+`title`、`type`（会议/客户/合同/巡检/内部/其他）、`icon`、`note`（地点/参与人）、
+`status`（pending/done/canceled）。
+
+> 时间字段做了**格式与范围双重校验**：`25:99`、`12:60`、`09:5`、`abc` 均被拒绝，
+> `9:05` 会自动补零为 `09:05`。
+
+### 3. 区间导出（给 AI 分析）
+
+点 **📊 导出** → 选时间段（含「近 7/14/30 天」「未来 7/30 天」快捷键）→
+**下载 Excel** 或 **下载 CSV**。弹窗会实时统计区间内的日程条数与类型分布。
+
+**Excel（.xlsx）** 为真实 xlsx 文件（零依赖手写 ZIP + SpreadsheetML）：
+
+- 首行大标题（合并单元格）+ 导出来源说明
+- 表头深色底白字、**首行冻结**、**自动筛选**
+- 列：日期 / 星期 / 开始时间 / 结束时间 / 日程标题 / 类型 / 状态 / 备注
+- 已验证可被 `openpyxl`、`file` 命令正确识别为 Excel 2007+ 文件
+
+**CSV** 带 BOM，适合直接粘贴给 AI 或导入其他系统。
+
+```bash
+BASE=http://127.0.0.1:5003
+curl -O "$BASE/api/export/schedule.xlsx?from=2026-09-16&to=2026-09-30"
+curl -O "$BASE/api/export/schedule.csv?from=2026-09-16&to=2026-09-30"
+```
+
+### 4. 为什么这样导出的数据适合喂 AI
+
+导出的表已经是**结构化明细 + 派生字段**（星期由日期算出、状态中文化），
+AI 拿到后可直接分析：时间分配是否合理、哪类工作占比过高、
+客户拜访频次、会议与执行时间的比例等。
+
+## 五之五、数据库导出
 
 系统使用 **SQLite 3**（单文件 `data/pdooh.db`，30 张表）。
 「数据连接中心」和页面顶部都有导出入口，共 **4 种格式**：
@@ -601,12 +658,12 @@ sudo journalctl -u pdooh-aic -f
 ## 八、验证
 
 ```bash
-node scripts/verify.js --reset            # 127 项断言（推荐：先重灌种子数据，完全确定性）
+node scripts/verify.js --reset            # 146 项断言（推荐：先重灌种子数据，完全确定性）
 node scripts/verify.js                    # 不重置，直接打当前数据
 node scripts/verify.js http://ip:5003     # 指定地址
 ```
 
-验证内容（15 组共 127 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
+验证内容（16 组共 146 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
 5 类 AI 问答、7 项写操作落库、SQL 控制台只读校验（拒绝 `DELETE` 与多语句，且自带 `LIMIT`
 的语句不被破坏）、分析接口、CSV 导出、静态资源可达性、**公网鉴权代理的 401/200/Cookie 会话**。
 
@@ -634,6 +691,8 @@ sudo systemctl start pdooh-aic
 | 6 | 鉴权代理 `WWW-Authenticate` 头写了中文 realm | HTTP 头仅允许 latin-1，抛 `ERR_INVALID_CHAR`，401 响应直接崩 | realm 改为 ASCII |
 | 7 | systemd unit 写死 `/usr/bin/node` | 本机 node 在 `/home/tom/.local/bin/`，服务 `status=203/EXEC` 起不来 | 改为绝对路径 `/home/tom/.local/bin/node` |
 | 8 | `migrate()` 在 `const q` 声明前被调用 | TDZ 报错 `Cannot access 'q' before initialization`，服务完全起不来 | 把调用移到查询封装之后 |
+| 14 | `schema.sql` 里给新列建索引 | 对已有库执行时 `CREATE TABLE IF NOT EXISTS` 是空操作（不补新列），紧随其后的 `CREATE INDEX` 直接报 `no such column`，服务起不来 | 新列索引移到 `migrate()` 中创建（此时列已补齐） |
+| 15 | 时间校验只查格式不查范围 | `25:99`、`12:60` 这类"格式对但时间不存在"的值被写入数据库 | 增加小时 ≤23、分钟 ≤59 的范围校验 |
 | 9 | SQLite `ALTER TABLE ADD COLUMN` 不接受非常量默认值 | `DEFAULT (datetime('now'))` 会导致迁移失败 | 时间戳列先 `DEFAULT ''` 建列，再 `UPDATE` 回填 |
 | 10 | 留资频控把校验失败/重复提交也计入额度 | 用户填错两次就被自己的额度挡住；连续运行测试必失败 | 改为"只统计成功入库"，校验失败不消耗额度 |
 | 11 | 隧道代理直接透传 `x-forwarded-for` | 访客可伪造该头轮换 IP，绕过留资防刷 | 用 Cloudflare 边缘注入的 `cf-connecting-ip` 覆盖之 |

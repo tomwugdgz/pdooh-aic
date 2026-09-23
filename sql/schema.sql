@@ -20,12 +20,21 @@ CREATE TABLE IF NOT EXISTS dashboard_stats (
 
 CREATE TABLE IF NOT EXISTS schedule_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    time        TEXT    NOT NULL,          -- HH:MM
+    sched_date  TEXT    NOT NULL DEFAULT '',  -- YYYY-MM-DD，日程归属日期
+    time        TEXT    NOT NULL,             -- HH:MM 开始时间
+    end_time    TEXT    NOT NULL DEFAULT '',  -- HH:MM 结束时间（可选）
     title       TEXT    NOT NULL,
-    type        TEXT    NOT NULL,          -- 会议|客户|合同|巡检|内部
+    type        TEXT    NOT NULL,             -- 会议|客户|合同|巡检|内部|其他
     icon        TEXT    NOT NULL,
-    sort_order  INTEGER NOT NULL DEFAULT 0
+    note        TEXT    NOT NULL DEFAULT '',  -- 备注 / 地点 / 参与人
+    status      TEXT    NOT NULL DEFAULT 'pending',  -- pending|done|canceled
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 );
+-- 注意：idx_schedule_date 的创建放在 server.js 的 migrate() 里，
+-- 因为对已有库执行本文件时 CREATE TABLE IF NOT EXISTS 不会补新列，
+-- 在此处建索引会因 "no such column: sched_date" 直接报错。
 
 CREATE TABLE IF NOT EXISTS reminders (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

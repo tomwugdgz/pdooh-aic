@@ -330,6 +330,105 @@ globalThis.__setData__ = (m, meta) => { MOCK = m; META = meta; };`;
   const afterDel = (await (await fetch(BASE + '/api/customers?kw=' + encodeURIComponent('自动化验证'))).json()).data;
   check('删除客户生效', del.ok && del.data.ok && afterDel.list.length === 0);
 
+  console.log('\n═══ 3c. 工作日程 CRUD 与导出（Excel/CSV） ═══');
+  const sched0 = (await (await fetch(BASE + '/api/schedule')).json()).data;
+  check('日程接口返回今日数据', !!sched0.date && Array.isArray(sched0.items) && !!sched0.stats,
+    `${sched0.date} / ${sched0.items.length} 项`);
+  check('日程含日期/时间段/类型/状态字段',
+    sched0.items.every(i => i.date && i.time && i.type && i.status !== undefined && 'endTime' in i && 'note' in i));
+
+  // 新增
+  const sc = await post('/api/schedule/create', {
+    date: sched0.date, time: '07:15', endTime: '07:45', title: '自动化验证日程', type: '内部', note: 'verify.js'
+  });
+  check('新增日程写库', sc.ok && sc.data.ok && sc.data.item.title === '自动化验证日程' && sc.data.item.time === '07:15',
+    JSON.stringify(sc.data.item || {}).slice(0, 90));
+  const schedId = sc.data?.id;
+
+  // 校验：非法时间 / 空标题
+  const badTime = await post('/api/schedule/create', { time: '25:99', title: 'x' });
+  check('非法时间被拒（含范围校验）', badTime.data.ok === false, badTime.data.message);
+  const badTime2 = await post('/api/schedule/create', { time: '12:60', title: 'x' });
+  check('分钟超范围被拒', badTime2.data.ok === false);
+  const okTime = await post('/api/schedule/create', { time: '9:05', title: '补零验证' });
+  check('单位数小时自动补零', okTime.data.ok === true && okTime.data.item.time === '09:05', okTime.data.item?.time);
+  await post('/api/schedule/delete', { id: okTime.data.id });
+  const badTitle = await post('/api/schedule/create', { time: '10:00' });
+  check('空标题被拒', badTitle.data.ok === false && badTitle.data.error === 'BAD_REQUEST');
+
+  // 修改
+  const su = await post('/api/schedule/update', { id: schedId, title: '自动化验证日程（已改）', status: 'done', time: '07:30' });
+  check('修改日程写库', su.ok && su.data.item.title === '自动化验证日程（已改）' &&
+    su.data.item.status === 'done' && su.data.item.time === '07:30');
+  // 切换状态
+  const st = await post('/api/schedule/update', { id: schedId, status: 'pending' });
+  check('日程状态可切换', st.data.item.status === 'pending');
+  // 区间查询
+  const rng = (await (await fetch(BASE + `/api/schedule/range?from=${sched0.date}&to=${sched0.date}`)).json()).data;
+  check('区间查询命中当日日程', rng.count >= 1 && rng.items.every(i => i.date === sched0.date), `${rng.count} 条`);
+  const badRange = await fetch(BASE + '/api/schedule/range?from=xxx&to=yyy');
+  check('区间参数校验', badRange.status === 400);
+
+  // Excel 导出（校验是否为合法 xlsx：ZIP 魔数 + 必需部件）
+  const xr = await fetch(BASE + `/api/export/schedule.xlsx?from=${sched0.date}&to=${sched0.date}`);
+  const xbuf = Buffer.from(await xr.arrayBuffer());
+  const isZip = xbuf[0] === 0x50 && xbuf[1] === 0x4B && xbuf[2] === 0x03 && xbuf[3] === 0x04;
+  const xtext = xbuf.toString('latin1');
+  const parts = ['[Content_Types].xml', 'xl/workbook.xml', 'xl/worksheets/sheet1.xml', 'xl/styles.xml'];
+  check('Excel 导出为合法 xlsx（ZIP 魔数 + 必需部件）',
+    xr.status === 200 && isZip && parts.every(p => xtext.includes(p)) && xbuf.length > 1000,
+    `魔数=${xbuf.subarray(0, 4).toString('hex')} 大小=${xbuf.length}`);
+  check('xlsx 响应头正确',
+    /spreadsheetml\.sheet/.test(xr.headers.get('content-type') || '') &&
+    /attachment; filename="schedule-/.test(xr.headers.get('content-disposition') || ''));
+  // xlsx 内的部件是 deflate 压缩的，必须解压后再查内容
+  const zipRead = (buf, name) => {
+    const zlib = require('node:zlib');
+    let off = 0;
+    while (off < buf.length - 4) {
+      if (buf.readUInt32LE(off) !== 0x04034b50) break;
+      const method = buf.readUInt16LE(off + 8);
+      const compSize = buf.readUInt32LE(off + 18);
+      const nameLen = buf.readUInt16LE(off + 26);
+      const extraLen = buf.readUInt16LE(off + 28);
+      const fname = buf.subarray(off + 30, off + 30 + nameLen).toString('utf8');
+      const dataStart = off + 30 + nameLen + extraLen;
+      if (fname === name) {
+        const raw = buf.subarray(dataStart, dataStart + compSize);
+        return method === 8 ? zlib.inflateRawSync(raw).toString('utf8') : raw.toString('utf8');
+      }
+      off = dataStart + compSize;
+    }
+    return null;
+  };
+  const sheetXml = zipRead(xbuf, 'xl/worksheets/sheet1.xml') || '';
+  check('xlsx 解压后含中文列名与数据',
+    sheetXml.includes('日程标题') && sheetXml.includes('开始时间') && sheetXml.includes('类型') && sheetXml.includes('状态'),
+    `sheetXml ${sheetXml.length} 字节`);
+  check('xlsx 含冻结窗格与自动筛选', sheetXml.includes('frozen') && sheetXml.includes('autoFilter'));
+
+  // CSV 导出
+  const cr = await fetch(BASE + `/api/export/schedule.csv?from=${sched0.date}&to=${sched0.date}`);
+  const cbuf = Buffer.from(await cr.arrayBuffer());
+  const ctxt = cbuf.toString('utf8');
+  const csvBom = cbuf[0] === 0xEF && cbuf[1] === 0xBB && cbuf[2] === 0xBF;
+  check('日程 CSV 导出（带 BOM + 完整列头）',
+    cr.status === 200 && csvBom && ctxt.includes('日期') && ctxt.includes('开始时间') && ctxt.includes('状态'),
+    `行数≈${ctxt.split(String.fromCharCode(13, 10)).length}`);
+
+  // 删除
+  const sd = await post('/api/schedule/delete', { id: schedId });
+  const afterSchedDel = (await (await fetch(BASE + `/api/schedule/range?from=${sched0.date}&to=${sched0.date}`)).json()).data;
+  check('删除日程生效', sd.ok && sd.data.ok && !afterSchedDel.items.some(i => i.id === schedId));
+  const delMissing = await post('/api/schedule/delete', { id: 999999 });
+  check('删除不存在的日程返回 NOT_FOUND', delMissing.data.ok === false && delMissing.data.error === 'NOT_FOUND');
+
+  const schedAudit = (await (await fetch(BASE + '/api/activity')).json()).data;
+  check('日程增删改与导出均写审计日志',
+    ['SCHEDULE_CREATE', 'SCHEDULE_UPDATE', 'SCHEDULE_DELETE', 'SCHEDULE_EXPORT']
+      .every(a => schedAudit.some(x => x.action === a)),
+    schedAudit.filter(x => String(x.action).startsWith('SCHEDULE')).length + ' 条');
+
   console.log('\n═══ 8d. 数据库导出（SQL / JSON / .db / CSV） ═══');
   const tbls = (await (await fetch(BASE + '/api/export/tables')).json()).data;
   check('表清单接口（引擎/表数/行数）',

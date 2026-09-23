@@ -28,14 +28,27 @@ INSERT INTO dashboard_stats (label, value, icon, color, trend, sort_order) VALUE
  ('今日会议', '5',  '🎯', 'info',    '下一场 15:00', 3),
  ('未读邮件', '23', '📧', 'primary', '8 封加急',    4);
 
-INSERT INTO schedule_items (time, title, type, icon, sort_order) VALUES
- ('09:30', '团队晨会',                '会议', '🎯', 1),
- ('10:30', '可口可乐 Q3 投放方案评审', '客户', '🤝', 2),
- ('12:00', '湾仔码头合同续签',         '合同', '📝', 3),
- ('14:00', '王老吉点位巡检',           '巡检', '📍', 4),
- ('15:00', '罗姐 AI 周会',             '内部', '🤖', 5),
- ('16:30', '宝马华南区提案',           '客户', '🤝', 6),
- ('18:00', '日报提交',                 '内部', '📝', 7);
+-- 今日日程
+INSERT INTO schedule_items (sched_date, time, end_time, title, type, icon, note, status, sort_order) VALUES
+ (date('now','localtime'), '09:30', '10:00', '团队晨会',                 '会议', '🎯', '会议室 A · 全员',        'pending', 1),
+ (date('now','localtime'), '10:30', '11:30', '可口可乐 Q3 投放方案评审', '客户', '🤝', '客户到访 · 小王主讲',    'pending', 2),
+ (date('now','localtime'), '12:00', '13:00', '湾仔码头合同续签',         '合同', '📝', '法务已过审',            'pending', 3),
+ (date('now','localtime'), '14:00', '15:00', '王老吉点位巡检',           '巡检', '📍', '番禺万达 + 珠江新城',    'pending', 4),
+ (date('now','localtime'), '15:00', '16:00', '罗姐 AI 周会',             '内部', '🤖', '复盘本周 AI 分析结论',   'pending', 5),
+ (date('now','localtime'), '16:30', '17:30', '宝马华南区提案',           '客户', '🤝', '张总监 · 需带点位方案',  'pending', 6),
+ (date('now','localtime'), '18:00', '18:30', '日报提交',                 '内部', '📝', '',                      'pending', 7);
+
+-- 前后几天的日程（供「按时间段导出」演示）
+INSERT INTO schedule_items (sched_date, time, end_time, title, type, icon, note, status, sort_order) VALUES
+ (date('now','localtime','-2 day'), '10:00', '', '农夫山泉年度框架谈判',  '客户', '🤝', '刘总 · 已谈妥 80%',      'done',    1),
+ (date('now','localtime','-2 day'), '15:00', '', '深圳南山点位巡检',      '巡检', '📍', '完成 42 个点位检查',     'done',    2),
+ (date('now','localtime','-1 day'), '09:30', '', '团队晨会',              '会议', '🎯', '',                      'done',    1),
+ (date('now','localtime','-1 day'), '14:00', '', '奔驰 GLE 素材评审',     '客户', '🤝', '陈主管反馈 3 处修改',     'done',    2),
+ (date('now','localtime','-1 day'), '17:00', '', '合同电子签上线评审',    '内部', '🤖', '产品部 + 法务',           'done',    3),
+ (date('now','localtime','+1 day'), '10:00', '', '立白夏季新品提案',      '客户', '🤝', '赵经理 · 准备 3 套点位',  'pending', 1),
+ (date('now','localtime','+1 day'), '15:30', '', '佛山碧桂园点位巡检',    '巡检', '📍', '',                      'pending', 2),
+ (date('now','localtime','+2 day'), '11:00', '', '海天酱油新品沟通',      '客户', '🤝', '钱总 · 首次拜访',        'pending', 1),
+ (date('now','localtime','+2 day'), '16:00', '', 'Q4 投放策略复盘会',     '会议', '🎯', '全员参加',               'pending', 2);
 
 INSERT INTO reminders (icon, text, color, sort_order) VALUES
  ('⚠️', '万达智能屏合同 7 天后到期，金额 ¥15万', 'warning', 1),
