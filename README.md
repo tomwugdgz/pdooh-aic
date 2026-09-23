@@ -36,9 +36,13 @@ pdooh-aic/
 ├── scripts/
 │   ├── start.sh                  # 启动 / 停止 / 重启 / 状态 / 重建数据库
 │   ├── tunnel.sh                 # 隧道地址与口令管理
-│   ├── verify.js                 # 全栈端到端验证（64 项断言）
-│   └── pdooh-aic.service         # systemd 服务单元（可选）
-└── data/
+│   ├── verify.js                 # 全栈端到端验证（116 项断言）
+│   ├── browser-submit-test.js    # CDP 驱动真实浏览器走完整留资流程
+│   ├── refresh-demo-data.js      # 演示数据保鲜（收入日期对齐到今天）
+│   ├── pdooh-aic.service         # systemd 服务单元
+│   ├── pdooh-proxy.service       # 隧道鉴权代理服务单元
+│   └── pdooh-tunnel.service      # Cloudflare 隧道服务单元
+└── data/                         # 运行时数据（已 gitignore，含数据库与凭证）
     ├── pdooh.db                  # SQLite 数据库文件
     └── pdooh.log                 # 运行日志
 ```
@@ -92,7 +96,7 @@ cd /home/tom/deepseek/pdooh-aic
 
 外键、索引、WAL 模式均已启用；`points` 表上建有 `city_id / point_type / status` 索引。
 
-## 四、API 接口（共 37 个）
+## 四、API 接口（共 38 个）
 
 **读接口**
 
@@ -101,6 +105,7 @@ cd /home/tom/deepseek/pdooh-aic
 | `GET /api/health` | 健康检查 |
 | `GET /api/bootstrap` | 16 模块 + KPI + 对话 + 指标（前端一次拉取） |
 | `GET /api/kpi` | 经营决策 4 项 KPI（实时计算） |
+| `GET /api/overview` | **今日工作台实时数据**：问候语（按时段）+ 日期/星期 + 真实天气 + 三项 KPI |
 | `GET /api/dashboard` `GET /api/pending` `GET /api/map` `GET /api/customers` | 模块 01/02/04/05 |
 | `GET /api/sales` `GET /api/campaigns` `GET /api/communities` `GET /api/contracts` | 模块 06/07/08/09 |
 | `GET /api/creatives` `GET /api/agents` `GET /api/tickets` `GET /api/knowledge?kw=` | 模块 10/11/12/13（知识库支持关键词检索） |
@@ -266,6 +271,82 @@ SELECT name, contact, phone, created_at FROM customers WHERE is_public=1 ORDER B
 | 其余所有后台接口 | **不下发 CORS 头** | 防止局域网内任意网页读取经营数据；前端是同源请求，不依赖 CORS |
 
 `/api/health` 对带 `Origin` 头的浏览器来源会隐藏数据库文件路径，避免通过任意网页探测服务器目录结构。
+
+## 五之三、今日工作台的"实时化"
+
+工作台头部不再是写死的文案，**问候语、日期、天气、KPI 全部与后端实时同步**。
+
+### 1. 动态问候语
+
+按服务器小时数自动切换，称呼可配置：
+
+| 时段 | 问候语 |
+| --- | --- |
+| 05:00–11:00 | 早上好 |
+| 11:00–13:00 | 中午好 |
+| 13:00–18:00 | 下午好 |
+| 18:00–23:00 | 晚上好 |
+| 23:00–05:00 | 夜深了 |
+
+称呼默认 `Tom`，可用环境变量覆盖：
+
+```bash
+OWNER_NAME=张总 node server.js
+```
+
+### 2. 动态日期与时钟
+
+- 日期/星期取服务器当天（不再写死 `2026 年 6 月 24 日`）
+- 头部时钟**每秒走字**（纯前端，不请求后端）
+
+### 3. 真实天气
+
+后端每 10 分钟拉取一次真实天气（带缓存）：
+
+| 优先级 | 数据源 | 说明 |
+| --- | --- | --- |
+| 主源 | Open-Meteo | 免 key，返回温度/湿度/风速/最高最低温 |
+| 兜底 | wttr.in | 主源失败时自动切换 |
+| 降级 | 上次成功值 | 两源都不可用时返回缓存并标记 `stale` |
+
+WMO 天气代码已映射为中文描述 + emoji（晴 ☀️ / 多云 ⛅ / 雷阵雨 ⛈️ 等）。
+
+城市可配置：
+
+```bash
+WEATHER_CITY=深圳 WEATHER_LAT=22.5431 WEATHER_LON=114.0579 node server.js
+```
+
+### 4. KPI 与数据库实时一致
+
+| 卡片 | 数据来源 |
+| --- | --- |
+| 今日投放收入 | `revenue_daily` 今日合计，附环比涨跌 |
+| 待签约风险(万) | `pending_items` 中待处理合同/点位金额合计 + 项数 |
+| 点位覆盖数 | `points` 表实时计数 + 社区单元数 |
+
+### 5. 页面"动起来"的机制
+
+| 机制 | 说明 |
+| --- | --- |
+| 时钟 | 每 1 秒走字 |
+| 数据轮询 | 每 30 秒拉一次 `/api/overview`，问候语/天气/KPI 自动刷新，**无需手动刷新页面** |
+| 变化提示 | KPI 数字变化时闪烁一次，配合绿色呼吸灯 |
+| 智能启停 | 仅在「今日工作台」页可见时运行，切到其他页面自动停止，不做无谓请求 |
+
+### 6. 演示数据保鲜
+
+演示数据的收入是按灌库当天生成的，**过几天再打开，「今日收入」会变成 ¥0**。
+用刷新脚本把日期相关的数据重新对齐到今天：
+
+```bash
+node scripts/refresh-demo-data.js            # 刷新近 30 天收入 + 重排到期天数
+node scripts/refresh-demo-data.js --status   # 只看状态
+node scripts/refresh-demo-data.js --days 60  # 指定天数
+```
+
+该脚本**只动 `revenue_daily` 与待确认项的剩余天数**，
+不会触碰客户、合同、工单、AI 对话等业务数据。
 
 ## 六、罗姐 AI 引擎
 
@@ -467,12 +548,12 @@ sudo journalctl -u pdooh-aic -f
 ## 八、验证
 
 ```bash
-node scripts/verify.js --reset            # 104 项断言（推荐：先重灌种子数据，完全确定性）
+node scripts/verify.js --reset            # 116 项断言（推荐：先重灌种子数据，完全确定性）
 node scripts/verify.js                    # 不重置，直接打当前数据
 node scripts/verify.js http://ip:5003     # 指定地址
 ```
 
-验证内容（12 组共 104 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
+验证内容（14 组共 116 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
 5 类 AI 问答、7 项写操作落库、SQL 控制台只读校验（拒绝 `DELETE` 与多语句，且自带 `LIMIT`
 的语句不被破坏）、分析接口、CSV 导出、静态资源可达性、**公网鉴权代理的 401/200/Cookie 会话**。
 

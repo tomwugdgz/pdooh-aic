@@ -1264,11 +1264,52 @@
         .hero-subtitle { font-size: 14px; opacity: 0.9; position: relative; z-index: 1; }
         .hero-stats {
             display: flex; gap: 32px; margin-top: 20px;
-            position: relative; z-index: 1;
+            position: relative; z-index: 1; flex-wrap: wrap;
         }
         .hero-stat-item { }
-        .hero-stat-value { font-size: 28px; font-weight: 800; }
+        .hero-stat-value {
+            font-size: 28px; font-weight: 800;
+            transition: color .3s ease, transform .3s ease;
+        }
+        .hero-stat-value.flash { animation: kpiFlash .9s ease; }
         .hero-stat-label { font-size: 12px; opacity: 0.85; }
+        .hero-unit { font-size: 15px; font-weight: 600; margin-left: 2px; opacity: .9; }
+
+        /* 工作台头部：实时状态 */
+        .hero-top {
+            display: flex; justify-content: space-between;
+            align-items: flex-start; gap: 20px; flex-wrap: wrap;
+            position: relative; z-index: 1;
+        }
+        .hero-live {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 13px; font-variant-numeric: tabular-nums;
+            background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.22);
+            padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+        }
+        .live-hint { font-size: 11px; opacity: .8; }
+        .live-dot {
+            width: 7px; height: 7px; border-radius: 50%; background: #6ee7b7;
+            box-shadow: 0 0 0 0 rgba(110,231,183,.85);
+            animation: livePulse 1.8s infinite;
+        }
+        .hero-trend {
+            display: inline-block; margin-left: 6px; padding: 1px 6px;
+            font-size: 11px; font-weight: 700; border-radius: 5px;
+            background: rgba(110,231,183,.22); color: #a7f3d0;
+        }
+        .hero-trend.down { background: rgba(254,202,202,.22); color: #fecaca; }
+        .hero-updated { font-size: 11px; opacity: .75; line-height: 1.5; }
+        @keyframes livePulse {
+            0%   { box-shadow: 0 0 0 0 rgba(110,231,183,.85); }
+            70%  { box-shadow: 0 0 0 7px rgba(110,231,183,0); }
+            100% { box-shadow: 0 0 0 0 rgba(110,231,183,0); }
+        }
+        @keyframes kpiFlash {
+            0%   { color: #fff; transform: scale(1); }
+            35%  { color: #a7f3d0; transform: scale(1.06); }
+            100% { color: #fff; transform: scale(1); }
+        }
 
         /* ==================== 素材卡 ==================== */
         .creative-thumb {

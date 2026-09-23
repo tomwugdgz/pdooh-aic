@@ -24,6 +24,7 @@
             }
 
             renderAllPages();                 // 2. 渲染所有页面
+            startDashboardLive();             //    工作台实时同步（时钟+轮询）
             hydrateKpi();                     // 3. 决策页 KPI 实时值
             hydrateChat();                    // 4. 对话记录（来自 ai_messages 表）
             showToast('数据已从数据库加载 · ' + META.generatedAt, 'success');
@@ -667,24 +668,131 @@ GROUP BY c.id ORDER BY 点位数 DESC;</textarea>
         // ==================== 各页面渲染函数 ====================
 
         // 01 今日工作台
+        // ==================== 今日工作台：实时同步引擎 ====================
+        // 1) 时钟每秒走字（本地，不请求后端）
+        // 2) 每 30 秒拉一次 /api/overview + /api/dashboard，问候语/天气/KPI 全部刷新
+        // 3) 仅在「今日工作台」页可见时运行，切走即停，避免无谓请求
+        const LIVE = { clockTimer: null, pollTimer: null, lastPoll: 0, polling: false };
+
+        function startDashboardLive() {
+            stopDashboardLive();
+            LIVE.clockTimer = setInterval(tickClock, 1000);
+            tickClock();
+            LIVE.pollTimer = setInterval(pollOverview, 30000);
+            pollOverview();          // 进入页面立即刷新一次
+        }
+
+        function stopDashboardLive() {
+            if (LIVE.clockTimer) { clearInterval(LIVE.clockTimer); LIVE.clockTimer = null; }
+            if (LIVE.pollTimer) { clearInterval(LIVE.pollTimer); LIVE.pollTimer = null; }
+        }
+
+        function tickClock() {
+            const el = document.getElementById('hero-clock');
+            if (!el) return;
+            const d = new Date();
+            const p = n => String(n).padStart(2, '0');
+            el.textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+        }
+
+        function setText(id, text) {
+            const el = document.getElementById(id);
+            if (el && el.textContent !== text) el.textContent = text;
+        }
+
+        // 数字变化时闪一下，让"动起来"看得见
+        function setValue(id, text) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el.textContent === text) return;
+            el.textContent = text;
+            el.classList.remove('flash');
+            void el.offsetWidth;          // 触发重排以重启动画
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 1000);
+        }
+
+        function applyOverview(o) {
+            if (!o) return;
+            const w = o.weather || {};
+            const k = o.kpi || {};
+            setText('hero-greeting', `${o.greeting || '你好'}，${o.user || 'Tom'} 👋`);
+            setText('hero-dateline', `今天是 ${o.dateText || ''} · ${o.weekday || ''}`);
+            setText('hero-weather', w.unavailable
+                ? `${o.city || '广州'} · 天气服务暂不可用`
+                : `${w.city || o.city} · ${w.temp}°C ${w.text} ${w.icon || ''}${w.high != null ? ` · ${w.low}~${w.high}°C` : ''}${w.stale ? ' (缓存)' : ''}`);
+            setValue('hero-kpi-revenue', (k.revenue && k.revenue.text) || '¥0.0万');
+            const trendEl = document.getElementById('hero-kpi-revenue-trend');
+            if (trendEl && k.revenue) {
+                trendEl.textContent = k.revenue.trendText || '';
+                trendEl.classList.toggle('down', k.revenue.dir === 'down');
+            }
+            setValue('hero-kpi-risk', (k.risk && k.risk.text) || '0');
+            setText('hero-kpi-risk-count', `(${(k.risk && k.risk.count) || 0} 项)`);
+            setValue('hero-kpi-points', (k.points && k.points.text) || '0');
+            setText('hero-kpi-points-sub', `${(k.points && k.points.communities) || 0} 个社区单元`);
+            setText('hero-updated', o.updatedAt || '—');
+        }
+
+        async function pollOverview() {
+            if (LIVE.polling) return;
+            if (!document.getElementById('hero-greeting')) return;   // 不在工作台页则跳过
+            LIVE.polling = true;
+            try {
+                const o = await API.get('/api/overview');
+                MOCK.overview = o;
+                applyOverview(o);
+                LIVE.lastPoll = Date.now();
+            } catch (e) {
+                console.warn('工作台实时刷新失败:', e.message);
+            } finally {
+                LIVE.polling = false;
+            }
+        }
+
         function renderDashboard() {
             const d = MOCK.dashboard;
+            const o = MOCK.overview || {};
+            const w = o.weather || {};
+            const k = o.kpi || {};
+            const weatherText = w.unavailable
+                ? `${o.city || '广州'} · 天气服务暂不可用`
+                : `${w.city || o.city} · ${w.temp}°C ${w.text} ${w.icon || ''}${w.high != null ? ` · ${w.low}~${w.high}°C` : ''}${w.stale ? ' (缓存)' : ''}`;
             return `
                 <div class="hero-banner">
-                    <div class="hero-greeting">早上好，李总 👋</div>
-                    <div class="hero-subtitle">今天是 2026 年 6 月 24 日 · 星期三 · 广州 · 32°C 晴</div>
+                    <div class="hero-top">
+                        <div>
+                            <div class="hero-greeting" id="hero-greeting">${o.greeting || '你好'}，${o.user || 'Tom'} 👋</div>
+                            <div class="hero-subtitle">
+                                <span id="hero-dateline">今天是 ${o.dateText || ''} · ${o.weekday || ''}</span>
+                                <span> · </span>
+                                <span id="hero-weather">${weatherText}</span>
+                            </div>
+                        </div>
+                        <div class="hero-live">
+                            <span class="live-dot"></span>
+                            <span id="hero-clock">${o.timeText || ''}</span>
+                            <span class="live-hint">数据实时同步</span>
+                        </div>
+                    </div>
                     <div class="hero-stats">
                         <div class="hero-stat-item">
-                            <div class="hero-stat-value">¥12.6万</div>
-                            <div class="hero-stat-label">今日投放收入</div>
+                            <div class="hero-stat-value" id="hero-kpi-revenue">${(k.revenue && k.revenue.text) || '¥0.0万'}</div>
+                            <div class="hero-stat-label">
+                                今日投放收入
+                                <span class="hero-trend ${(k.revenue && k.revenue.dir) === 'down' ? 'down' : ''}" id="hero-kpi-revenue-trend">${(k.revenue && k.revenue.trendText) || ''}</span>
+                            </div>
                         </div>
                         <div class="hero-stat-item">
-                            <div class="hero-stat-value">23</div>
-                            <div class="hero-stat-label">待签约风险 (万)</div>
+                            <div class="hero-stat-value"><span id="hero-kpi-risk">${(k.risk && k.risk.text) || '0'}</span><span class="hero-unit">万</span></div>
+                            <div class="hero-stat-label">待签约风险 <span id="hero-kpi-risk-count">(${(k.risk && k.risk.count) || 0} 项)</span></div>
                         </div>
                         <div class="hero-stat-item">
-                            <div class="hero-stat-value">2,368</div>
-                            <div class="hero-stat-label">点位覆盖数</div>
+                            <div class="hero-stat-value" id="hero-kpi-points">${(k.points && k.points.text) || '0'}</div>
+                            <div class="hero-stat-label">点位覆盖数 <span id="hero-kpi-points-sub">${(k.points && k.points.communities) || 0} 个社区单元</span></div>
+                        </div>
+                        <div class="hero-stat-item hero-updated">
+                            最后更新<br><span id="hero-updated">${o.updatedAt || '—'}</span>
                         </div>
                     </div>
                 </div>
@@ -1867,6 +1975,8 @@ GROUP BY c.id ORDER BY 点位数 DESC;</textarea>
         };
 
         function switchPage(pageId) {
+            // 工作台实时引擎：只在该页可见时运行
+            if (pageId === 'dashboard') startDashboardLive(); else stopDashboardLive();
             // 隐藏所有页面
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             // 显示目标页面

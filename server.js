@@ -136,6 +136,121 @@ const getDashboard = () => ({
   team: q.all('SELECT name, avatar, status, task FROM team_members ORDER BY sort_order')
 });
 
+// ---------- 工作台头部：问候语 / 日期 / 实时天气 / 实时 KPI ----------
+const OWNER_NAME = process.env.OWNER_NAME || 'Tom';
+const WEATHER_CITY = process.env.WEATHER_CITY || '广州';
+const WEATHER_LAT = Number(process.env.WEATHER_LAT || 23.1291);
+const WEATHER_LON = Number(process.env.WEATHER_LON || 113.2644);
+
+// WMO 天气代码 → 中文描述 + 图标
+const WMO = {
+  0: ['晴', '☀️'], 1: ['大部晴朗', '🌤️'], 2: ['多云', '⛅'], 3: ['阴', '☁️'],
+  45: ['有雾', '🌫️'], 48: ['冻雾', '🌫️'],
+  51: ['轻微毛毛雨', '🌦️'], 53: ['毛毛雨', '🌦️'], 55: ['浓密毛毛雨', '🌦️'],
+  56: ['冻毛毛雨', '🌧️'], 57: ['浓冻毛毛雨', '🌧️'],
+  61: ['小雨', '🌧️'], 63: ['中雨', '🌧️'], 65: ['大雨', '🌧️'],
+  66: ['冻雨', '🌧️'], 67: ['强冻雨', '🌧️'],
+  71: ['小雪', '🌨️'], 73: ['中雪', '🌨️'], 75: ['大雪', '🌨️'], 77: ['雪粒', '🌨️'],
+  80: ['阵雨', '🌦️'], 81: ['中等阵雨', '🌦️'], 82: ['强阵雨', '⛈️'],
+  85: ['小阵雪', '🌨️'], 86: ['大阵雪', '🌨️'],
+  95: ['雷阵雨', '⛈️'], 96: ['雷阵雨伴小冰雹', '⛈️'], 99: ['雷阵雨伴大冰雹', '⛈️']
+};
+
+function greetingByHour(h) {
+  if (h >= 5 && h < 11) return '早上好';
+  if (h >= 11 && h < 13) return '中午好';
+  if (h >= 13 && h < 18) return '下午好';
+  if (h >= 18 && h < 23) return '晚上好';
+  return '夜深了';
+}
+const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+// 天气缓存：10 分钟内不重复请求外部接口
+let weatherCache = { at: 0, data: null, error: null };
+
+async function fetchWeather() {
+  const now = Date.now();
+  if (weatherCache.data && now - weatherCache.at < 10 * 60 * 1000) {
+    return { ...weatherCache.data, cached: true };
+  }
+  // 主源：Open-Meteo（免 key、结构化、稳定）
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}`
+      + `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m`
+      + `&daily=temperature_2m_max,temperature_2m_min&timezone=Asia%2FShanghai&forecast_days=1`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const j = await res.json();
+    const c = j.current || {};
+    const [text, icon] = WMO[c.weather_code] || ['未知', '🌡️'];
+    const data = {
+      city: WEATHER_CITY, temp: Math.round(c.temperature_2m), feelsLike: Math.round(c.apparent_temperature),
+      text, icon, humidity: c.relative_humidity_2m, wind: Math.round(c.wind_speed_10m),
+      high: j.daily?.temperature_2m_max?.[0] != null ? Math.round(j.daily.temperature_2m_max[0]) : null,
+      low: j.daily?.temperature_2m_min?.[0] != null ? Math.round(j.daily.temperature_2m_min[0]) : null,
+      observedAt: c.time, source: 'open-meteo', stale: false
+    };
+    weatherCache = { at: now, data, error: null };
+    return data;
+  } catch (e) { weatherCache.error = e.message; }
+  // 兜底源：wttr.in
+  try {
+    const res = await fetch(`https://wttr.in/${encodeURIComponent(WEATHER_CITY)}?format=j1`, { signal: AbortSignal.timeout(6000) });
+    const j = await res.json();
+    const c = j.current_condition?.[0] || {};
+    const desc = (c.lang_zh && c.lang_zh[0] && c.lang_zh[0].value) || c.weatherDesc?.[0]?.value || '未知';
+    const data = {
+      city: WEATHER_CITY, temp: Number(c.temp_C), feelsLike: Number(c.FeelsLikeC),
+      text: desc, icon: '🌡️', humidity: Number(c.humidity), wind: Number(c.windspeedKmph),
+      high: Number(j.weather?.[0]?.maxtempC) || null, low: Number(j.weather?.[0]?.mintempC) || null,
+      observedAt: c.observation_time, source: 'wttr.in', stale: false
+    };
+    weatherCache = { at: now, data, error: null };
+    return data;
+  } catch (e) { weatherCache.error = e.message; }
+  // 两个源都失败：返回上次成功值（标记 stale），否则明确告知不可用
+  if (weatherCache.data) return { ...weatherCache.data, stale: true, error: weatherCache.error };
+  return { city: WEATHER_CITY, unavailable: true, error: weatherCache.error || '天气服务不可用' };
+}
+
+/** 今日工作台头部所需全部实时数据（问候语/日期/天气/KPI 均动态） */
+async function getOverview() {
+  const d = new Date();
+  const rev = q.get(`SELECT
+      COALESCE(SUM(CASE WHEN stat_date=date('now','localtime') THEN amount END),0) AS today,
+      COALESCE(SUM(CASE WHEN stat_date=date('now','localtime','-1 day') THEN amount END),0) AS yesterday
+    FROM revenue_daily`);
+  const risk = q.get(`SELECT ROUND(COALESCE(SUM(amount_num),0),1) AS wan, COUNT(*) AS cnt
+    FROM pending_items WHERE status='pending' AND category IN ('contract','spot')`);
+  const points = q.get(`SELECT COUNT(*) AS total,
+      (SELECT COUNT(DISTINCT community) FROM points) AS communities,
+      (SELECT COUNT(*) FROM points WHERE status='abnormal') AS abnormal FROM points`);
+  const growth = rev.yesterday ? (rev.today - rev.yesterday) / rev.yesterday * 100 : 0;
+
+  return {
+    greeting: greetingByHour(d.getHours()),
+    user: OWNER_NAME,
+    dateText: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`,
+    weekday: WEEKDAYS[d.getDay()],
+    timeText: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+    isoDate: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    city: WEATHER_CITY,
+    weather: await fetchWeather(),
+    kpi: {
+      revenue: {
+        raw: rev.today, wan: Number(wan(rev.today)), text: '¥' + wan(rev.today) + '万',
+        trend: growth, trendText: (growth >= 0 ? '+' : '') + growth.toFixed(1) + '%',
+        dir: growth >= 0 ? 'up' : 'down', label: '今日投放收入'
+      },
+      risk: { raw: risk.wan, text: String(risk.wan), unit: '万', count: risk.cnt, label: '待签约风险' },
+      points: {
+        raw: points.total, text: points.total.toLocaleString('zh-CN'),
+        communities: points.communities, abnormal: points.abnormal, label: '点位覆盖数'
+      }
+    },
+    updatedAt: nowStr()
+  };
+}
+
 // ============================================================
 //  模块 02 待确认 + 审批写操作
 // ============================================================
@@ -838,11 +953,12 @@ function runReadOnlySql(sql) {
 // ============================================================
 //  全量 bootstrap（前端一次性渲染 16 个模块）
 // ============================================================
-function bootstrap() {
+async function bootstrap() {
   const cust = getCustomers();
   return {
     generatedAt: nowStr(),
     kpi: getKpi(),
+    overview: await getOverview(),
     dashboard: getDashboard(),
     pending: getPending(),
     mapData: getMap(),
@@ -935,9 +1051,10 @@ const server = http.createServer(async (req, res) => {
           if (!req.headers.origin) payload.db = DB_FILE;
           return sendJson(res, payload, 200, true);
         }
-        case '/api/bootstrap': return sendJson(res, { ok: true, data: bootstrap() });
+        case '/api/bootstrap': return sendJson(res, { ok: true, data: await bootstrap() });
         case '/api/kpi': return sendJson(res, { ok: true, data: getKpi() });
         case '/api/dashboard': return sendJson(res, { ok: true, data: getDashboard() });
+        case '/api/overview': return sendJson(res, { ok: true, data: await getOverview() });
         case '/api/pending': return sendJson(res, { ok: true, data: getPending() });
         case '/api/map': return sendJson(res, { ok: true, data: getMap() });
         case '/api/map/city': return sendJson(res, { ok: true, data: getCityDetail(Q.get('id')) });

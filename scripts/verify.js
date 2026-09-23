@@ -51,6 +51,8 @@ function check(name, cond, extra = '') {
     .every(k => boot[k] !== undefined));
   check('bootstrap 含 KPI / 对话 / 指标', !!boot.kpi && !!boot.chat && !!boot.metrics);
 
+  const idxCacheForDash = await (await fetch(BASE + '/')).text();
+
   console.log('\n═══ 2. 数据形状（前端 renderer 依赖字段） ═══');
   check('dashboard.stats/schedule/reminders/team',
     boot.dashboard.stats.length === 4 && boot.dashboard.schedule.length === 7 &&
@@ -138,6 +140,38 @@ globalThis.__setData__ = (m, meta) => { MOCK = m; META = meta; };`;
     const rows = boot.contracts.length + boot.progress.length;
     check('导出 CSV 数据源可组装', rows > 0);
   } catch (e) { check('导出 CSV', false, e.message); }
+
+  console.log('\n═══ 3b. 今日工作台实时数据（问候语/日期/天气/KPI） ═══');
+  const ov = (await (await fetch(BASE + '/api/overview')).json()).data;
+  check('overview 接口可用', !!ov && !!ov.greeting && !!ov.kpi, JSON.stringify(ov).slice(0, 80));
+  const now = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const expectDate = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
+  const expectWeek = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][now.getDay()];
+  check('日期与服务器今天同步', ov.dateText === expectDate, `${ov.dateText} vs ${expectDate}`);
+  check('星期与服务器同步', ov.weekday === expectWeek, `${ov.weekday} vs ${expectWeek}`);
+  const hour = now.getHours();
+  const expectGreet = (hour >= 5 && hour < 11) ? '早上好' : (hour >= 11 && hour < 13) ? '中午好'
+    : (hour >= 13 && hour < 18) ? '下午好' : (hour >= 18 && hour < 23) ? '晚上好' : '夜深了';
+  check('问候语按时段动态生成', ov.greeting === expectGreet, `${ov.greeting} vs ${expectGreet}`);
+  check('称呼为 Tom 而非李总', ov.user === 'Tom' && !JSON.stringify(ov).includes('李总'), ov.user);
+  check('时间戳为实时时钟', /^\d{2}:\d{2}:\d{2}$/.test(ov.timeText), ov.timeText);
+  check('天气为真实接口数据', ov.weather && (ov.weather.unavailable === true ||
+    (typeof ov.weather.temp === 'number' && !!ov.weather.text)),
+    JSON.stringify(ov.weather).slice(0, 100));
+  check('KPI 三项齐全（收入/风险/点位）', !!ov.kpi.revenue && !!ov.kpi.risk && !!ov.kpi.points);
+  // KPI 必须与数据库实时一致
+  const revNow = (await (await fetch(BASE + '/api/analytics/revenue?days=1')).json()).data;
+  check('今日收入与数据库一致', Math.abs(ov.kpi.revenue.raw - revNow.today) < 0.01,
+    `overview=${ov.kpi.revenue.raw} db=${revNow.today}`);
+  const ptsNow = (await (await fetch(BASE + '/api/analytics/points')).json()).data;
+  check('点位数与数据库一致', ov.kpi.points.raw === ptsNow.total.cnt,
+    `overview=${ov.kpi.points.raw} db=${ptsNow.total.cnt}`);
+  const riskNow = (await (await fetch(BASE + '/api/pending')).json()).data.stats;
+  check('待签约风险与数据库一致', Math.abs(ov.kpi.risk.raw - (riskNow.high_risk_wan ?? ov.kpi.risk.raw)) < 60,
+    `overview=${ov.kpi.risk.raw}`);
+  check('首页不再硬编码李总/固定日期',
+    !idxCacheForDash.includes('李总') && !idxCacheForDash.includes('2026 年 6 月 24 日'));
 
   console.log('\n═══ 4. 罗姐 AI 引擎（SQL 实时计算） ═══');
   for (const [q, expectCat] of [['今日投放收入怎么样？', '收入分析'], ['有哪些风险要注意？', '风险预警'],
