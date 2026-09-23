@@ -330,6 +330,78 @@ globalThis.__setData__ = (m, meta) => { MOCK = m; META = meta; };`;
   const afterDel = (await (await fetch(BASE + '/api/customers?kw=' + encodeURIComponent('自动化验证'))).json()).data;
   check('删除客户生效', del.ok && del.data.ok && afterDel.list.length === 0);
 
+  console.log('\n═══ 8d. 数据库导出（SQL / JSON / .db / CSV） ═══');
+  const tbls = (await (await fetch(BASE + '/api/export/tables')).json()).data;
+  check('表清单接口（引擎/表数/行数）',
+    tbls.engine === 'SQLite 3' && tbls.tables.length >= 29 &&
+    tbls.tables.every(t => typeof t.rows === 'number' && t.columns > 0),
+    `表数=${tbls.tables.length}`);
+  const totalRows = tbls.tables.reduce((s, t) => s + t.rows, 0);
+
+  const sqlRes = await fetch(BASE + '/api/export/database.sql');
+  const sqlText = await sqlRes.text();
+  check('SQL 转储可下载且带附件头',
+    sqlRes.status === 200 && /attachment; filename=".*\.sql"/.test(sqlRes.headers.get('content-disposition') || ''),
+    String(sqlRes.status));
+  check('SQL 转储含结构 + 数据 + 事务',
+    sqlText.includes('BEGIN TRANSACTION;') && sqlText.includes('COMMIT;') &&
+    sqlText.includes('CREATE TABLE') && (sqlText.match(/INSERT INTO/g) || []).length > 1000,
+    `INSERT 语句 ${(sqlText.match(/INSERT INTO/g) || []).length} 条`);
+  check('SQL 转储含还原说明', sqlText.includes('sqlite3') && sqlText.includes('记录总数'));
+
+  // 关键：真实还原验证 —— 把导出的 SQL 灌进一个全新数据库，比对数据
+  let restoreOk = false, restoredCounts = null;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const os = require('node:os');
+    const fsx = require('node:fs');
+    const tmpDir = fsx.mkdtempSync(path.join(os.tmpdir(), 'pdooh-restore-'));
+    const tmpDb = path.join(tmpDir, 'restored.db');
+    const rdb = new DatabaseSync(tmpDb);
+    rdb.exec(sqlText);
+    const c = rdb.prepare('SELECT (SELECT COUNT(*) FROM points) AS p, (SELECT COUNT(*) FROM customers) AS c, (SELECT ROUND(SUM(amount),2) FROM revenue_daily) AS r').get();
+    const src = (await (await fetch(BASE + '/api/analytics/points')).json()).data;
+    const srcCust = (await (await fetch(BASE + '/api/customers')).json()).data.list.length;
+    const srcRev = (await (await fetch(BASE + '/api/analytics/revenue?days=30')).json()).data.daily.reduce((s, x) => s + x.amount, 0);
+    restoredCounts = c;
+    restoreOk = c.p === src.total.cnt && c.c === srcCust && Math.abs(c.r - srcRev) < 1;
+    rdb.close();
+    fsx.rmSync(tmpDir, { recursive: true, force: true });
+  } catch (e) { restoredCounts = { error: e.message }; }
+  check('SQL 转储能真实还原且数据一致', restoreOk, JSON.stringify(restoredCounts));
+
+  const jsonRes = await (await fetch(BASE + '/api/export/database.json')).json();
+  check('JSON 导出结构完整',
+    jsonRes.engine === 'SQLite 3' && jsonRes.tableCount === tbls.tables.length &&
+    Object.keys(jsonRes.tables).length === tbls.tables.length && Array.isArray(jsonRes.tables.points),
+    `表数=${jsonRes.tableCount} 记录=${jsonRes.totalRows}`);
+  // 导出动作本身会往 activity_log 写审计行，因此允许极小偏差
+  check('JSON 行数与表清单一致（±10 容差）', Math.abs(jsonRes.totalRows - totalRows) <= 10,
+    `${jsonRes.totalRows} vs ${totalRows}`);
+
+  const dbRes = await fetch(BASE + '/api/export/database.db');
+  const dbBuf = Buffer.from(await dbRes.arrayBuffer());
+  check('原始 .db 快照为标准 SQLite 文件',
+    dbBuf.subarray(0, 15).toString() === 'SQLite format 3' && dbBuf.length > 100000,
+    `魔数=${dbBuf.subarray(0, 15).toString()} 大小=${dbBuf.length}`);
+
+  const csvRes = await fetch(BASE + '/api/export/table.csv?table=points');
+  const csvBuf = Buffer.from(await csvRes.arrayBuffer());
+  const csvText = csvBuf.toString('utf8');
+  // 注意：Response.text() 会按规范剥掉 BOM，必须检查原始字节 EF BB BF
+  const hasBom = csvBuf[0] === 0xEF && csvBuf[1] === 0xBB && csvBuf[2] === 0xBF;
+  check('单表 CSV 导出（原始字节带 BOM，中文正常）',
+    csvRes.status === 200 && hasBom && csvText.includes('community') && csvText.includes('广州'),
+    `BOM=${hasBom} 行数≈${csvText.split(String.fromCharCode(13, 10)).length}`);
+  const badTable = await fetch(BASE + '/api/export/table.csv?table=' + encodeURIComponent('points; DROP TABLE points'));
+  check('非法表名被拒（防注入）', badTable.status === 404 || (await badTable.text()).includes('NOT_FOUND'),
+    'HTTP ' + badTable.status);
+
+  const audit = (await (await fetch(BASE + '/api/activity')).json()).data;
+  check('导出动作写入审计日志',
+    audit.some(a => a.action === 'DB_EXPORT' && String(a.target).startsWith('database.')),
+    audit.filter(a => a.action === 'DB_EXPORT').length + ' 条');
+
   console.log('\n═══ 8c. 跨域策略与公开页可用性（file:// 场景） ═══');
   const leadCors = await fetch(BASE + '/api/public/lead', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '10.97.1.1' },
@@ -380,7 +452,8 @@ globalThis.__setData__ = (m, meta) => { MOCK = m; META = meta; };`;
     const pubLead = await fetch(PX + '/lead.html');
     check('获客落地页免登录可访问', pubLead.status === 200, 'HTTP ' + pubLead.status);
     const pubLeadApi = await fetch(PX + '/api/public/lead', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '10.98.1.1' },
+      // 用随机 IP，避免反复运行验证时耗尽该 IP 的留资额度（每小时 5 条）
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '10.98.' + Math.floor(Math.random() * 250 + 1) + '.' + Math.floor(Math.random() * 250 + 1) },
       body: JSON.stringify({ name: '隧道公开留资验证', contact: '王先生', phone: '13600001234' })
     });
     check('公开留资接口免登录可用', pubLeadApi.status === 200 && (await pubLeadApi.json()).data.ok === true);

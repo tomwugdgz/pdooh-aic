@@ -2022,6 +2022,98 @@ GROUP BY c.id ORDER BY 点位数 DESC;</textarea>
             }
         }
 
+        // ==================== 数据库导出 ====================
+        const DB_FORMATS = [
+            { key: 'sql',  icon: '🗄️', title: 'SQL 全量转储', ext: '.sql',
+              desc: '结构与数据完整导出，可用 sqlite3 一键还原 / 迁移到 MySQL、PostgreSQL',
+              hint: '还原方式：sqlite3 restored.db < 文件.sql' },
+            { key: 'json', icon: '📦', title: 'JSON 数据包', ext: '.json',
+              desc: '全部数据表按表名分组，适合程序读取、数据分析、导入其他系统',
+              hint: '结构：{ tables: { 表名: [记录...] } }' },
+            { key: 'db',   icon: '💾', title: 'SQLite 原始文件', ext: '.db',
+              desc: '数据库文件一致性快照（服务运行中导出也安全），用 DB 工具直接打开',
+              hint: '可用 DB Browser for SQLite / DBeaver 打开' },
+            { key: 'csv',  icon: '📊', title: '单表 CSV', ext: '.csv',
+              desc: '按表导出，Excel 可直接打开（带 BOM，中文不乱码）',
+              hint: '在下方表清单中选择要导出的表' }
+        ];
+
+        async function openDbExport() {
+            if (document.getElementById('db-export')) return;
+            let info = null;
+            try { info = await API.get('/api/export/tables'); } catch (e) { /* 稍后提示 */ }
+            const totalRows = info ? info.tables.reduce((s, t) => s + t.rows, 0) : 0;
+
+            const box = document.createElement('div');
+            box.id = 'db-export';
+            box.style.cssText = 'position:fixed;inset:0;background:rgba(2,6,23,.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
+            box.innerHTML = `
+                <div style="background:var(--dark-card);border:1px solid var(--dark-border);border-radius:var(--radius);width:min(920px,100%);max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+                    <div style="padding:18px 22px;border-bottom:1px solid var(--dark-border);display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <div style="font-weight:700;font-size:17px;">💾 导出数据库</div>
+                            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">
+                                引擎 <b style="color:var(--accent);">${info ? info.engine : 'SQLite 3'}</b> ·
+                                文件 <b style="color:var(--accent);">${info ? info.file : 'pdooh.db'}</b> ·
+                                <b style="color:var(--accent);">${info ? info.tables.length : 30}</b> 张表 ·
+                                <b style="color:var(--accent);">${totalRows.toLocaleString('zh-CN')}</b> 行记录
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('db-export').remove()">✕ 关闭</button>
+                    </div>
+                    <div style="padding:18px 22px;overflow:auto;flex:1;">
+                        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:22px;">
+                            ${DB_FORMATS.map(f => `
+                                <div style="border:1px solid var(--dark-border);border-radius:12px;padding:16px;background:var(--dark-bg);">
+                                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                                        <span style="font-size:20px;">${f.icon}</span>
+                                        <b style="font-size:14.5px;">${f.title}</b>
+                                        <span class="badge badge-primary" style="margin-left:auto;">${f.ext}</span>
+                                    </div>
+                                    <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.65;margin-bottom:10px;">${f.desc}</div>
+                                    <button class="btn btn-primary btn-sm" style="width:100%;"
+                                        onclick="${f.key === 'csv' ? "document.getElementById('db-table-list').scrollIntoView({behavior:'smooth'})" : `downloadDb('${f.key}')`}">
+                                        ${f.key === 'csv' ? '↓ 选择表导出' : '下载'}
+                                    </button>
+                                    <div style="font-size:11px;color:var(--text-secondary);margin-top:7px;">${f.hint}</div>
+                                </div>`).join('')}
+                        </div>
+
+                        <div id="db-table-list">
+                            <div style="font-weight:600;margin-bottom:10px;">📋 数据表清单（点击导出单表 CSV）</div>
+                            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                                ${info ? info.tables.map(t => `
+                                    <button class="btn btn-ghost btn-sm" style="justify-content:space-between;display:flex;"
+                                        onclick="downloadTableCsv('${t.name}')" title="${t.columns} 个字段">
+                                        <span style="overflow:hidden;text-overflow:ellipsis;">${t.name}</span>
+                                        <span style="color:var(--accent);font-size:11px;">${t.rows}</span>
+                                    </button>`).join('') : '<div style="color:var(--text-secondary);">表清单加载失败</div>'}
+                            </div>
+                        </div>
+
+                        <div style="margin-top:20px;padding:14px;background:var(--db-bg,var(--dark-bg));border:1px solid var(--dark-border);border-radius:10px;font-size:12.5px;color:var(--text-secondary);line-height:1.8;">
+                            <b style="color:var(--text-primary);">说明</b><br>
+                            • 导出包含全部业务数据（客户、合同、点位、收入、工单、AI 对话等）<br>
+                            • 原始 .db 使用 SQLite <code>VACUUM INTO</code> 生成一致性快照，服务运行中导出也安全<br>
+                            • 所有导出动作都会写入 <code>activity_log</code> 审计日志<br>
+                            • ⚠️ 导出文件含客户联系方式等敏感数据，请妥善保管
+                        </div>
+                    </div>
+                </div>`;
+            document.body.appendChild(box);
+        }
+
+        function downloadDb(format) {
+            showToast('正在生成导出文件...', 'info');
+            window.location.href = apiPath('/api/export/database.' + format);
+            setTimeout(() => showToast('导出已开始下载', 'success'), 700);
+        }
+
+        function downloadTableCsv(table) {
+            window.location.href = apiPath('/api/export/table.csv?table=' + encodeURIComponent(table));
+            showToast('正在导出 ' + table + '.csv', 'info');
+        }
+
         // 导出报告：后端生成真实 CSV（含 KPI / 收入 / 风险 / 合同 / 进度）
         function exportReport() {
             showToast('正在生成报告...', 'info');

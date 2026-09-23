@@ -70,7 +70,7 @@ cd /home/tom/deepseek/pdooh-aic
 
 端口可用环境变量覆盖：`PORT=8080 ./scripts/start.sh start`
 
-## 三、数据库设计（29 张表）
+## 三、数据库设计（30 张表 · SQLite 3）
 
 | 模块 | 表 | 说明 |
 | --- | --- | --- |
@@ -96,7 +96,7 @@ cd /home/tom/deepseek/pdooh-aic
 
 外键、索引、WAL 模式均已启用；`points` 表上建有 `city_id / point_type / status` 索引。
 
-## 四、API 接口（共 38 个）
+## 四、API 接口（共 42 个）
 
 **读接口**
 
@@ -120,7 +120,12 @@ cd /home/tom/deepseek/pdooh-aic
 | `GET /api/analytics/acquisition` | 获客分析：来源、阶段漏斗、14 天趋势、转化率 |
 | `GET /api/ai/history?conversationId=1` | 罗姐对话历史 |
 | `GET /api/activity` | 操作审计日志 |
-| `GET /api/export/report.csv` | 报表导出（真实 CSV，带 BOM，Excel 可直接打开） |
+| `GET /api/export/report.csv` | 业务报表导出（KPI/收入/风险/合同/进度） |
+| `GET /api/export/tables` | 数据表清单（表名/行数/字段数），供导出界面使用 |
+| `GET /api/export/database.sql` | **数据库完整 SQL 转储**（结构+数据，可一键还原） |
+| `GET /api/export/database.json` | **数据库 JSON 导出**（按表名分组） |
+| `GET /api/export/database.db` | **SQLite 原始文件快照**（VACUUM INTO，运行中导出也安全） |
+| `GET /api/export/table.csv?table=xxx` | **单表 CSV 导出**（带 BOM，Excel 中文不乱码） |
 
 **写接口**（均落库并写审计日志）
 
@@ -348,6 +353,54 @@ node scripts/refresh-demo-data.js --days 60  # 指定天数
 该脚本**只动 `revenue_daily` 与待确认项的剩余天数**，
 不会触碰客户、合同、工单、AI 对话等业务数据。
 
+## 五之四、数据库导出
+
+系统使用 **SQLite 3**（单文件 `data/pdooh.db`，30 张表）。
+「数据连接中心」和页面顶部都有导出入口，共 **4 种格式**：
+
+| 格式 | 用途 | 说明 |
+| --- | --- | --- |
+| 🗄️ **SQL 全量转储** `.sql` | 备份 / 迁移 | 结构 + 数据完整导出，`sqlite3 restored.db < 文件.sql` 一键还原；迁移到 MySQL / PostgreSQL 只需改方言 |
+| 📦 **JSON 数据包** `.json` | 程序读取 / 数据分析 | `{ tables: { 表名: [记录...] } }`，附导出时间与统计 |
+| 💾 **SQLite 原始文件** `.db` | 用 DB 工具打开 | 通过 `VACUUM INTO` 生成**一致性快照**，服务运行中导出也安全；可直接用 DBeaver / DB Browser 打开 |
+| 📊 **单表 CSV** `.csv` | Excel 分析 | 30 张表逐个导出，带 BOM 中文不乱码 |
+
+### 界面入口
+
+1. 页面顶部工具栏 → **💾 导出数据库**
+2. 侧边栏 **16 数据连接** → 数据源详情区
+
+弹窗会显示引擎、文件名、表数与总行数，并列出全部 30 张表（带行数），
+点击任意表名即可单独导出该表 CSV。
+
+### 命令行导出
+
+```bash
+BASE=http://127.0.0.1:5003
+curl -O $BASE/api/export/database.sql        # SQL 转储
+curl -O $BASE/api/export/database.json       # JSON
+curl -O $BASE/api/export/database.db         # 原始 .db
+curl -O "$BASE/api/export/table.csv?table=points"   # 单表 CSV
+curl -s $BASE/api/export/tables | python3 -m json.tool   # 表清单
+```
+
+也可以直接用 sqlite3 命令行（不经过服务）：
+
+```bash
+sqlite3 data/pdooh.db .dump > backup.sql          # 等价于 SQL 转储
+sqlite3 data/pdooh.db "VACUUM INTO 'backup.db'"   # 一致性快照
+```
+
+### 安全与审计
+
+- 导出接口属后台接口，公网访问**需要口令**（不在隧道的免登录放行名单里）
+- 表名做了白名单校验，`table=points; DROP TABLE points` 这类注入会被拒（404）
+- **每次导出都会写入 `activity_log`**，可在 SQL 控制台查：
+  ```sql
+  SELECT action, target, detail, created_at FROM activity_log WHERE action='DB_EXPORT' ORDER BY id DESC;
+  ```
+- ⚠️ 导出文件含客户联系方式等敏感数据，请妥善保管
+
 ## 六、罗姐 AI 引擎
 
 `POST /api/ai/chat` 不是关键词拼文案：后端按问题意图路由到 4 个分析函数，
@@ -548,12 +601,12 @@ sudo journalctl -u pdooh-aic -f
 ## 八、验证
 
 ```bash
-node scripts/verify.js --reset            # 116 项断言（推荐：先重灌种子数据，完全确定性）
+node scripts/verify.js --reset            # 127 项断言（推荐：先重灌种子数据，完全确定性）
 node scripts/verify.js                    # 不重置，直接打当前数据
 node scripts/verify.js http://ip:5003     # 指定地址
 ```
 
-验证内容（14 组共 116 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
+验证内容（15 组共 127 项）：16 模块数据结构、**在 Node 沙箱中真实执行前端 15 个页面渲染函数**、
 5 类 AI 问答、7 项写操作落库、SQL 控制台只读校验（拒绝 `DELETE` 与多语句，且自带 `LIMIT`
 的语句不被破坏）、分析接口、CSV 导出、静态资源可达性、**公网鉴权代理的 401/200/Cookie 会话**。
 

@@ -912,6 +912,108 @@ const getChatHistory = (conversationId = 1) => q.all(
    FROM ai_messages WHERE conversation_id=? ORDER BY id`, conversationId);
 
 // ============================================================
+//  数据库导出（SQL / JSON / 原始 .db / 单表 CSV）
+// ============================================================
+const os = require('node:os');
+
+/** 业务表清单（排除 SQLite 内部表），带行数，供前端选择 */
+function listTables() {
+  const names = q.all(`SELECT name FROM sqlite_master
+      WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).map(r => r.name);
+  return names.map(name => {
+    const cnt = q.get(`SELECT COUNT(*) AS c FROM "${name}"`).c;
+    const cols = q.all(`PRAGMA table_info("${name}")`).map(c => c.name);
+    return { name, rows: cnt, columns: cols.length };
+  });
+}
+
+/** SQL 字面量转义 */
+function sqlLiteral(v) {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL';
+  if (typeof v === 'bigint') return String(v);
+  if (Buffer.isBuffer(v)) return `X'${v.toString('hex')}'`;
+  return `'${String(v).replace(/'/g, "''")}'`;
+}
+
+/** 完整 SQL 转储：结构与数据，可直接用 sqlite3 还原 */
+function exportDatabaseSql() {
+  const out = [];
+  const tables = listTables();
+  const totalRows = tables.reduce((s, t) => s + t.rows, 0);
+  out.push('-- ============================================================');
+  out.push('-- pDOOH AI 经营决策中心 · 数据库完整导出');
+  out.push('-- 数据库引擎: SQLite 3');
+  out.push(`-- 导出时间  : ${nowStr()}`);
+  out.push(`-- 表数量    : ${tables.length} 张`);
+  out.push(`-- 记录总数  : ${totalRows} 行`);
+  out.push('-- 还原方式  : sqlite3 restored.db < 本文件');
+  out.push('-- ============================================================');
+  out.push('');
+  out.push('PRAGMA foreign_keys = OFF;');
+  out.push('BEGIN TRANSACTION;');
+  out.push('');
+
+  // 1) 结构：表 → 索引 → 视图/触发器
+  const schema = q.all(`SELECT type, name, sql FROM sqlite_master
+      WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+      ORDER BY CASE type WHEN 'table' THEN 1 WHEN 'index' THEN 2 WHEN 'trigger' THEN 3 ELSE 4 END, name`);
+  out.push('-- ---------- 结构定义 ----------');
+  for (const s of schema) out.push(`${s.sql};`);
+  out.push('');
+
+  // 2) 数据
+  out.push('-- ---------- 数据 ----------');
+  for (const t of tables) {
+    const rows = q.all(`SELECT * FROM "${t.name}"`);
+    if (!rows.length) { out.push(`-- ${t.name}: 0 行`); continue; }
+    out.push(`-- ${t.name}: ${rows.length} 行`);
+    for (const row of rows) {
+      const cols = Object.keys(row);
+      const vals = cols.map(c => sqlLiteral(row[c]));
+      out.push(`INSERT INTO "${t.name}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${vals.join(', ')});`);
+    }
+    out.push('');
+  }
+  out.push('COMMIT;');
+  out.push('');
+  return out.join('\n');
+}
+
+/** JSON 导出：全部表 */
+function exportDatabaseJson() {
+  const tables = listTables();
+  const data = {};
+  for (const t of tables) data[t.name] = q.all(`SELECT * FROM "${t.name}"`);
+  return JSON.stringify({
+    exportedAt: nowStr(), engine: 'SQLite 3', database: path.basename(DB_FILE),
+    tableCount: tables.length,
+    totalRows: tables.reduce((s, t) => s + t.rows, 0),
+    tables: data
+  }, null, 2);
+}
+
+/** 原始 .db 文件快照：用 VACUUM INTO 生成一致性副本（服务运行中也安全） */
+function exportDatabaseFile() {
+  const tmp = path.join(os.tmpdir(), `pdooh-export-${Date.now()}-${process.pid}.db`);
+  q.run(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+  return tmp;
+}
+
+/** 单表 CSV */
+function exportTableCsv(name) {
+  const valid = listTables().find(t => t.name === name);
+  if (!valid) return null;
+  const rows = q.all(`SELECT * FROM "${name}"`);
+  if (!rows.length) return { csv: '\uFEFF(空表)\r\n', rows: 0 };
+  const cols = Object.keys(rows[0]);
+  const esc = v => `"${String(v === null || v === undefined ? '' : v).replace(/"/g, '""')}"`;
+  const lines = [cols.map(esc).join(',')];
+  for (const r of rows) lines.push(cols.map(c => esc(r[c])).join(','));
+  return { csv: '\uFEFF' + lines.join('\r\n'), rows: rows.length };
+}
+
+// ============================================================
 //  报表导出（真实 CSV）
 // ============================================================
 function exportCsv() {
@@ -1081,6 +1183,62 @@ const server = http.createServer(async (req, res) => {
         case '/api/analytics/roi': return sendJson(res, { ok: true, data: computeRoi() });
         case '/api/ai/history': return sendJson(res, { ok: true, data: getChatHistory(Number(Q.get('conversationId')) || 1) });
         case '/api/activity': return sendJson(res, { ok: true, data: q.all('SELECT * FROM activity_log ORDER BY id DESC LIMIT 50') });
+        // ---- 数据库导出 ----
+        case '/api/export/tables':
+          return sendJson(res, { ok: true, data: { engine: 'SQLite 3', file: path.basename(DB_FILE), tables: listTables() } });
+
+        case '/api/export/database.sql': {
+          const body = exportDatabaseSql();
+          logActivity('DB_EXPORT', 'database.sql', `${Buffer.byteLength(body)} 字节`);
+          res.writeHead(200, {
+            'Content-Type': 'application/sql; charset=utf-8',
+            'Content-Disposition': `attachment; filename="pdooh-${Date.now()}.sql"`,
+            'Content-Length': Buffer.byteLength(body)
+          });
+          return res.end(body);
+        }
+
+        case '/api/export/database.json': {
+          const body = exportDatabaseJson();
+          logActivity('DB_EXPORT', 'database.json', `${Buffer.byteLength(body)} 字节`);
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Disposition': `attachment; filename="pdooh-${Date.now()}.json"`,
+            'Content-Length': Buffer.byteLength(body)
+          });
+          return res.end(body);
+        }
+
+        case '/api/export/database.db': {
+          try {
+            const tmp = exportDatabaseFile();
+            const buf = fs.readFileSync(tmp);
+            fs.unlinkSync(tmp);
+            logActivity('DB_EXPORT', 'database.db', `${buf.length} 字节（VACUUM INTO 一致性快照）`);
+            res.writeHead(200, {
+              'Content-Type': 'application/vnd.sqlite3',
+              'Content-Disposition': `attachment; filename="pdooh-${Date.now()}.db"`,
+              'Content-Length': buf.length
+            });
+            return res.end(buf);
+          } catch (e) {
+            return sendJson(res, { ok: false, error: 'EXPORT_FAILED', message: '数据库快照生成失败: ' + e.message }, 500);
+          }
+        }
+
+        case '/api/export/table.csv': {
+          const name = Q.get('table');
+          const r = exportTableCsv(name);
+          if (!r) return sendJson(res, { ok: false, error: 'NOT_FOUND', message: '数据表不存在: ' + name }, 404);
+          logActivity('DB_EXPORT', 'table:' + name, `${r.rows} 行`);
+          res.writeHead(200, {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': `attachment; filename="${name}.csv"`,
+            'Content-Length': Buffer.byteLength(r.csv)
+          });
+          return res.end(r.csv);
+        }
+
         case '/api/export/report.csv': {
           const csv = exportCsv();
           res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="pdooh-report.csv"', 'Access-Control-Allow-Origin': '*' });
